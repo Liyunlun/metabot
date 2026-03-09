@@ -151,8 +151,23 @@ print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'cronExpr': sys
       fi
     done
 
-    echo "==> Done! Restart the service to apply changes."
-    echo "    pm2 restart metabot  OR  pkill -f 'tsx src/index' && npm run dev"
+    echo "==> Restarting service..."
+    if command -v pm2 &>/dev/null && pm2 list 2>/dev/null | grep -q metabot; then
+      pm2 restart metabot && echo "    Restarted via pm2"
+    elif pgrep -f "tsx src/index" &>/dev/null; then
+      pkill -f "tsx src/index"
+      (cd "$METABOT_SRC" && nohup npm run dev > /tmp/metabot.log 2>&1 &)
+      echo "    Restarted dev server (PID $!)"
+    elif pgrep -f "node dist/index" &>/dev/null; then
+      pkill -f "node dist/index"
+      (cd "$METABOT_SRC" && nohup npm start > /tmp/metabot.log 2>&1 &)
+      echo "    Restarted production server (PID $!)"
+    else
+      echo "    No running MetaBot process found. Start manually:"
+      echo "    cd $METABOT_SRC && npm run dev"
+    fi
+
+    echo "==> Update complete!"
     ;;
   # --- Help ---
   *)
