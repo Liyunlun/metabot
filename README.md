@@ -301,29 +301,24 @@ This allows multiple machines to share the same MetaBot and MetaMemory instance 
 
 ## Contributing
 
-MetaBot includes Claude Code skills that streamline the contribution workflow. You can report bugs, request features, and fix issues — all from your terminal.
+MetaBot ships with Claude Code skills that streamline the contribution workflow. Use them from the terminal or directly from Feishu/Telegram chat.
 
-| Skill | Description |
-|-------|-------------|
+| Command | Description |
+|---------|-------------|
 | `/report-bug` | Interviews you about a bug, drafts a GitHub issue with environment info, and creates it after your approval. |
 | `/request-feature` | Helps refine your feature idea, checks for existing similar functionality, and creates a well-structured feature request issue. |
 | `/fix-issue [number]` | Picks an open issue, claims it, creates a branch, implements the fix, runs CI, and submits a PR — all guided step by step. |
 
-**Quick start:**
+**From the terminal:**
 
 ```bash
-# Report a bug
 claude "/report-bug card builder crashes on empty content"
-
-# Request a feature
 claude "/request-feature support Slack as an IM platform"
-
-# Fix an existing issue
 claude "/fix-issue 42"
-
-# Browse open issues to pick one
 claude "/fix-issue list"
 ```
+
+**From Feishu/Telegram:** Send the same commands as chat messages (e.g. `/report-bug ...`). The bot forwards them to Claude Code, which runs the skill and responds with interactive cards.
 
 For full contribution guidelines (code style, branching, PR checklist), see [CONTRIBUTING.md](CONTRIBUTING.md).
 

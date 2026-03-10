@@ -301,29 +301,24 @@ API_SECRET=your-secret                    # 共享认证 Token
 
 ## 参与贡献
 
-MetaBot 内置了 Claude Code 技能，简化贡献流程。你可以直接在终端里报告 Bug、提交功能需求、修复 Issue。
+MetaBot 内置了 Claude Code 技能，简化贡献流程。可以在终端或飞书/Telegram 聊天中直接使用。
 
-| 技能 | 说明 |
+| 命令 | 说明 |
 |------|------|
 | `/report-bug` | 引导你描述 Bug，自动收集环境信息，草拟 GitHub Issue 并在你确认后创建。 |
 | `/request-feature` | 帮你梳理功能想法，检查是否已有类似功能，创建结构化的功能需求 Issue。 |
 | `/fix-issue [编号]` | 认领 Issue，创建分支，实现修复，运行 CI，提交 PR —— 全程引导。 |
 
-**快速上手：**
+**终端使用：**
 
 ```bash
-# 报告 Bug
 claude "/report-bug 空内容时卡片构建器崩溃"
-
-# 请求功能
 claude "/request-feature 支持 Slack 作为 IM 平台"
-
-# 修复已有 Issue
 claude "/fix-issue 42"
-
-# 浏览待解决的 Issue
 claude "/fix-issue list"
 ```
+
+**飞书/Telegram 使用：** 直接在聊天中发送相同命令（如 `/report-bug ...`）。Bot 会将命令转发给 Claude Code，以交互式卡片展示过程和结果。
 
 完整贡献指南（代码风格、分支策略、PR 清单）请参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
