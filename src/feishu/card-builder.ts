@@ -88,7 +88,21 @@ export function buildCard(state: CardState): string {
   if (state.status === 'complete' || state.status === 'error') {
     const parts: string[] = [];
     if (state.durationMs !== undefined) {
-      parts.push(`Duration: ${(state.durationMs / 1000).toFixed(1)}s`);
+      parts.push(`⏱ ${(state.durationMs / 1000).toFixed(1)}s`);
+    }
+    if (state.numTurns !== undefined) {
+      parts.push(`🔄 ${state.numTurns} turns`);
+    }
+    if (state.costUsd !== undefined) {
+      parts.push(`💰 $${state.costUsd.toFixed(4)}`);
+    }
+    if (state.workingDirectory) {
+      const dir = state.workingDirectory;
+      const short = dir.length > 40 ? '.../' + dir.split('/').slice(-2).join('/') : dir;
+      parts.push(`📁 ${short}`);
+    }
+    if (state.sessionId) {
+      parts.push(`🔑 ${state.sessionId.slice(0, 8)}`);
     }
     if (parts.length > 0) {
       elements.push({
@@ -96,7 +110,7 @@ export function buildCard(state: CardState): string {
         elements: [
           {
             tag: 'plain_text',
-            content: parts.join(' | '),
+            content: parts.join('  ·  '),
           },
         ],
       });

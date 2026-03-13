@@ -26,12 +26,16 @@ export class StreamProcessor {
   private sessionId: string | undefined;
   private costUsd: number | undefined;
   private durationMs: number | undefined;
+  private numTurns: number | undefined;
   private _imagePaths: Set<string> = new Set();
   private _pendingQuestion: PendingQuestion | null = null;
   private _autoRespondTools: AutoRespondTool[] = [];
   private _planFilePath: string | null = null;
 
-  constructor(private userPrompt: string) {}
+  constructor(
+    private userPrompt: string,
+    private workingDirectory?: string,
+  ) {}
 
   processMessage(message: SDKMessage): CardState {
     // Capture session_id from any message
@@ -75,6 +79,9 @@ export class StreamProcessor {
       costUsd: this.costUsd,
       durationMs: this.durationMs,
       pendingQuestion: this._pendingQuestion || undefined,
+      sessionId: this.sessionId,
+      workingDirectory: this.workingDirectory,
+      numTurns: this.numTurns,
     };
   }
 
@@ -135,6 +142,9 @@ export class StreamProcessor {
   private processResultMessage(message: SDKMessage): CardState {
     this.costUsd = message.total_cost_usd;
     this.durationMs = message.duration_ms;
+    if (message.num_turns !== undefined) {
+      this.numTurns = message.num_turns;
+    }
 
     // Mark all tools as done
     for (const tool of this.toolCalls) {
@@ -153,6 +163,9 @@ export class StreamProcessor {
       errorMessage: isError
         ? (message.errors?.join('; ') || `Ended with: ${message.subtype}`)
         : undefined,
+      sessionId: this.sessionId,
+      workingDirectory: this.workingDirectory,
+      numTurns: this.numTurns,
     };
   }
 

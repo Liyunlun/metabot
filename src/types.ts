@@ -27,6 +27,9 @@ export interface CardState {
   durationMs?: number;
   errorMessage?: string;
   pendingQuestion?: PendingQuestion;
+  sessionId?: string;
+  workingDirectory?: string;
+  numTurns?: number;
 }
 
 export interface IncomingMessage {

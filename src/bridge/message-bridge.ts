@@ -271,7 +271,7 @@ export class MessageBridge {
 
     // Send initial "thinking" card
     const displayPrompt = fileKey ? '📎 ' + text : imageKey ? '🖼️ ' + text : text;
-    const processor = new StreamProcessor(displayPrompt);
+    const processor = new StreamProcessor(displayPrompt, cwd);
     const initialState: CardState = {
       status: 'thinking',
       userPrompt: displayPrompt,
@@ -530,7 +530,7 @@ export class MessageBridge {
     const outputsDir = this.outputsManager.prepareDir(chatId);
 
     const displayPrompt = prompt;
-    const processor = new StreamProcessor(displayPrompt);
+    const processor = new StreamProcessor(displayPrompt, cwd);
     const rateLimiter = new RateLimiter(1500);
 
     let messageId: string | undefined;
