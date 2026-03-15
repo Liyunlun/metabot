@@ -55,10 +55,11 @@ We built MetaBot to run [XVI Robotics](https://xvirobotics.com) as an **agent-na
 |-----------|-------------|
 | **Claude Code Kernel** | Every bot is a full Claude Code instance — Read, Write, Edit, Bash, Glob, Grep, WebSearch, MCP, and more. `bypassPermissions` mode for autonomous operation. |
 | **MetaSkill** | Agent factory. `/metaskill ios app` generates a complete `.claude/` agent team (orchestrator + specialists + code-reviewer) after researching best practices. Uses MetaMemory for shared knowledge across agents. |
-| **MetaMemory** | Embedded SQLite knowledge store with full-text search and Web UI. Agents read/write Markdown documents across sessions. Shared by all agents. Auto-syncs to Feishu Wiki when changes occur (debounced). |
+| **MetaMemory** | Embedded SQLite knowledge store with full-text search and Web UI. Agents read/write Markdown documents across sessions. Shared by all agents. Auto-syncs to Feishu Wiki when changes occur (debounced). Web UI: `http://localhost:8100?token=YOUR_TOKEN` (token shown in startup logs). |
 | **Feishu Doc Reader** | Read Feishu documents and wiki pages as Markdown. `fd read <url>` from CLI, or Claude auto-reads when users share Feishu URLs. Available as the `feishu-doc` skill. |
 | **IM Bridge** | Chat with any agent from Feishu/Lark or Telegram (including mobile). Streaming cards with color-coded status and tool call tracking. |
-| **Agent Bus** | REST API on port 9100. Agents delegate tasks to each other via `curl`. Create/remove bots at runtime. Exposed as the `/metabot` skill — loaded on demand, not injected into every prompt. |
+| **Agent Bus** | REST API on port 9100. Agents talk to each other via `mb talk`. Create/remove bots at runtime. Exposed as the `/metabot` skill — loaded on demand, not injected into every prompt. |
+| **Peers** | Federation system for cross-instance bot discovery and task routing. Configure `METABOT_PEERS` to connect multiple MetaBot instances — same machine or remote. `mb talk alice/backend-bot` routes automatically. |
 | **Task Scheduler** | One-time delays and recurring cron jobs. `0 8 * * 1-5` = weekday 8am news briefing. Timezone-aware (default: Asia/Shanghai). Persists across restarts, auto-retries when busy. |
 | **CLI Tools** | `metabot`, `mm`, `mb`, and `fd` commands installed to `~/.local/bin/`. `metabot update` to pull/rebuild/restart. `mm` for MetaMemory, `mb` for Agent Bus, `fd` for Feishu docs. |
 
@@ -119,6 +120,7 @@ Prerequisites: Node.js 20+, [Claude Code CLI](https://github.com/anthropics/clau
 - **Multi-agent team** — frontend bot, backend bot, infra bot, each in their own workspace, talking via the Agent Bus
 - **Self-growing organization** — a manager bot that creates new agents on demand, assigns tasks, schedules follow-ups
 - **Autonomous research pipeline** — agents that search, analyze, save findings to MetaMemory, and schedule next steps
+- **Voice assistant (Jarvis mode)** — "Hey Siri, Jarvis" from AirPods, hands-free voice control of any agent via iOS Shortcuts. Server-side Whisper STT for high-quality speech recognition. See [Voice Setup Guide](docs/features/voice-jarvis.md)
 
 ## Example Prompts
 
@@ -257,6 +259,9 @@ checks service health, reviews overnight error logs, and posts a summary.
 | `CLAUDE_EXECUTABLE_PATH` | auto-detect | Path to `claude` binary (resolved via `which` if not set) |
 | `METABOT_URL` | `http://localhost:9100` | MetaBot API URL (for CLI remote access) |
 | `META_MEMORY_URL` | `http://localhost:8100` | MetaMemory server URL (for CLI remote access) |
+| `METABOT_PEERS` | — | Comma-separated peer MetaBot URLs for cross-instance discovery |
+| `METABOT_PEER_SECRETS` | — | Comma-separated secrets for each peer (positional match) |
+| `METABOT_PEER_NAMES` | auto | Comma-separated names for each peer |
 | `LOG_LEVEL` | info | Log level |
 
 </details>
@@ -283,6 +288,7 @@ MetaBot runs Claude Code in `bypassPermissions` mode — no interactive approval
 - Control access via Feishu/Telegram platform settings (app visibility, group membership)
 - Use `maxBudgetUsd` to cap cost per request
 - `API_SECRET` enables Bearer auth on both the API server and MetaMemory
+- MetaMemory Web UI requires a token: open `http://localhost:8100?token=YOUR_TOKEN` in browser. The full URL with token is printed to logs on startup. The token is saved to `localStorage` so you only need to pass it once
 - MetaMemory supports **folder-level ACL**: set `MEMORY_ADMIN_TOKEN` and `MEMORY_TOKEN` for dual-role access. Admin sees all folders; reader only sees folders with `visibility: shared`. Use `PUT /api/folders/:id` with `{"visibility":"private"}` to lock a folder
 
 ## Chat Commands
@@ -309,11 +315,12 @@ MetaBot runs Claude Code in `bypassPermissions` mode — no interactive approval
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/bots` | List bots |
+| `GET` | `/api/bots` | List bots (local + peer) |
 | `POST` | `/api/bots` | Create bot at runtime |
 | `GET` | `/api/bots/:name` | Get bot details |
 | `DELETE` | `/api/bots/:name` | Remove bot |
-| `POST` | `/api/tasks` | Delegate task to a bot |
+| `POST` | `/api/talk` | Talk to a bot (auto-routes to peers, supports `peerName/botName`) |
+| `GET` | `/api/peers` | List peers and their status |
 | `POST` | `/api/schedule` | Schedule one-time or recurring (cron) task |
 | `GET` | `/api/schedule` | List scheduled tasks (one-time + recurring) |
 | `PATCH` | `/api/schedule/:id` | Update a scheduled task |
@@ -358,8 +365,10 @@ fd read-id <docId>                  # read document by ID
 fd info <feishu-url>                # get document metadata
 
 # Agent Bus
-mb bots                             # list all bots
-mb task <bot> <chatId> <prompt>     # delegate task
+mb bots                             # list all bots (local + peer)
+mb talk <bot> <chatId> <prompt>     # talk to a bot (auto-routes to peers)
+mb talk alice/bot <chatId> <prompt> # talk to a specific peer's bot
+mb peers                            # list peers and their status
 mb schedule list                    # list scheduled tasks
 mb schedule cron <bot> <chatId> '<cron>' <prompt>  # recurring task
 mb schedule pause <id>              # pause recurring task

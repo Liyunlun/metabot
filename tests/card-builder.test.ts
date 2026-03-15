@@ -31,7 +31,7 @@ describe('buildCard', () => {
     // Tool calls are inside the top-level collapsible panel body
     const detailPanel = json.elements.find((e: any) => e.tag === 'collapsible_panel');
     expect(detailPanel).toBeDefined();
-    const panelContent = detailPanel.body.map((e: any) => e.content).join('\n');
+    const panelContent = detailPanel.elements.map((e: any) => e.content).join('\n');
     expect(panelContent).toContain('Read');
     expect(panelContent).toContain('✅');
     expect(panelContent).toContain('⏳');

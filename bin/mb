@@ -28,19 +28,39 @@ case "$cmd" in
   bot)
     curl -s -H "$METABOT_AUTH" "$METABOT_URL/api/bots/$1" | _json
     ;;
-  # --- Task delegation ---
-  task|t)
+  # --- Agent Talk (cross-instance auto-routing) ---
+  talk|t)
     bot="$1" chat="$2"; shift 2 2>/dev/null || true
     prompt="$*"
     if [[ -z "${bot:-}" || -z "${chat:-}" || -z "${prompt:-}" ]]; then
-      echo "Usage: mb task <botName> <chatId> <prompt>"
+      echo "Usage: mb talk [peer/]<botName> <chatId> <prompt>"
+      echo "  Examples:"
+      echo "    mb talk mybot chat123 'fix the bug'"
+      echo "    mb talk alice/backend-bot chat123 'deploy to staging'"
       exit 1
     fi
     python3 -c "
 import json, sys
 print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'prompt': sys.argv[3], 'sendCards': True}))
 " "$bot" "$chat" "$prompt" | \
-    curl -s -X POST "$METABOT_URL/api/tasks" \
+    curl -s -X POST "$METABOT_URL/api/talk" \
+      -H "$METABOT_AUTH" -H "Content-Type: application/json" \
+      -d @-
+    ;;
+  # --- Task delegation (deprecated alias for talk) ---
+  task)
+    bot="$1" chat="$2"; shift 2 2>/dev/null || true
+    prompt="$*"
+    if [[ -z "${bot:-}" || -z "${chat:-}" || -z "${prompt:-}" ]]; then
+      echo "Usage: mb task <botName> <chatId> <prompt>"
+      echo "(Deprecated: use 'mb talk' instead)"
+      exit 1
+    fi
+    python3 -c "
+import json, sys
+print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'prompt': sys.argv[3], 'sendCards': True}))
+" "$bot" "$chat" "$prompt" | \
+    curl -s -X POST "$METABOT_URL/api/talk" \
       -H "$METABOT_AUTH" -H "Content-Type: application/json" \
       -d @-
     ;;
@@ -105,6 +125,10 @@ print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'cronExpr': sys
         ;;
     esac
     ;;
+  # --- Peers ---
+  peers|p)
+    curl -s -H "$METABOT_AUTH" "$METABOT_URL/api/peers" | _json
+    ;;
   # --- Stats & Metrics ---
   stats|st)
     curl -s -H "$METABOT_AUTH" "$METABOT_URL/api/stats" | _json
@@ -151,6 +175,42 @@ print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'cronExpr': sys
       fi
     done
 
+    echo "==> Updating skills..."
+    SKILLS_DIR="$HOME/.claude/skills"
+    if [[ -d "$SKILLS_DIR" ]]; then
+      for skill in metaskill metamemory metabot feishu-doc; do
+        case "$skill" in
+          metaskill)  src="$METABOT_SRC/src/skills/metaskill" ;;
+          metamemory) src="$METABOT_SRC/src/memory/skill" ;;
+          metabot)    src="$METABOT_SRC/src/skills/metabot" ;;
+          feishu-doc) src="$METABOT_SRC/src/skills/feishu-doc" ;;
+          *)          src="" ;;
+        esac
+        if [[ -n "$src" && -d "$src" && -d "$SKILLS_DIR/$skill" ]]; then
+          cp -r "$src/." "$SKILLS_DIR/$skill/"
+          echo "    Updated: $skill"
+        fi
+      done
+      # Also update workspace skills if bots.json exists
+      if [[ -f "$METABOT_SRC/bots.json" ]] && command -v node &>/dev/null; then
+        work_dir=$(node -e "
+          const c=JSON.parse(require('fs').readFileSync('$METABOT_SRC/bots.json','utf-8'));
+          const b=[...(c.feishuBots||[]),...(c.telegramBots||[])];
+          if(b[0])console.log(b[0].defaultWorkingDirectory);
+        " 2>/dev/null || true)
+        if [[ -n "${work_dir:-}" && -d "$work_dir/.claude/skills" ]]; then
+          for skill in metaskill metamemory metabot feishu-doc; do
+            if [[ -d "$SKILLS_DIR/$skill" && -d "$work_dir/.claude/skills/$skill" ]]; then
+              cp -r "$SKILLS_DIR/$skill/." "$work_dir/.claude/skills/$skill/"
+            fi
+          done
+          if [[ -f "$METABOT_SRC/src/workspace/CLAUDE.md" ]]; then
+            cp "$METABOT_SRC/src/workspace/CLAUDE.md" "$work_dir/CLAUDE.md"
+          fi
+        fi
+      fi
+    fi
+
     echo "==> Restarting service..."
     if command -v pm2 &>/dev/null && pm2 list 2>/dev/null | grep -q metabot; then
       pm2 restart metabot && echo "    Restarted via pm2"
@@ -174,11 +234,15 @@ print(json.dumps({'botName': sys.argv[1], 'chatId': sys.argv[2], 'cronExpr': sys
     echo "mb - MetaBot API CLI"
     echo ""
     echo "  Bots:"
-    echo "    mb bots                          - List all bots"
+    echo "    mb bots                          - List all bots (local + peer)"
     echo "    mb bot <name>                    - Get bot details"
     echo ""
-    echo "  Tasks:"
-    echo "    mb task <bot> <chatId> <prompt>  - Delegate task to a bot"
+    echo "  Agent Talk:"
+    echo "    mb talk <bot> <chatId> <prompt>  - Talk to a bot (auto-routes to peers)"
+    echo "    mb talk peer/bot <chatId> <prompt> - Talk to a specific peer's bot"
+    echo ""
+    echo "  Peers:"
+    echo "    mb peers                         - List peers and their status"
     echo ""
     echo "  Scheduling:"
     echo "    mb schedule list                 - List all scheduled tasks"
