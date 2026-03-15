@@ -94,11 +94,17 @@ export function buildCard(state: CardState): string {
 
   // Wrap all detail content in a single top-level collapsible panel
   if (detailLines.length > 0) {
-    // Build a summary label for the panel header
-    const toolCount = state.toolCalls.length;
+    // Build a summary label for the panel header showing tool names
     const agentCount = state.subagentTasks?.length ?? 0;
     const labelParts: string[] = [];
-    if (toolCount > 0) labelParts.push(`${toolCount} tool${toolCount > 1 ? 's' : ''}`);
+    if (state.toolCalls.length > 0) {
+      const uniqueNames = [...new Set(state.toolCalls.map((t) => t.name))];
+      const nameStr =
+        uniqueNames.length <= 5
+          ? uniqueNames.join(' · ')
+          : uniqueNames.slice(0, 4).join(' · ') + ` +${uniqueNames.length - 4}`;
+      labelParts.push(nameStr);
+    }
     if (agentCount > 0) labelParts.push(`${agentCount} agent${agentCount > 1 ? 's' : ''}`);
     if (state.thinkingText?.trim() && labelParts.length === 0) labelParts.push('thinking');
     const label = labelParts.length > 0 ? labelParts.join(' · ') : 'details';
@@ -113,10 +119,10 @@ export function buildCard(state: CardState): string {
         },
       },
       border: { color: 'grey' },
-      body: [
+      elements: [
         {
           tag: 'markdown',
-          content: detailLines.join('\n'),
+          content: detailLines.join('\n\n'),
         },
       ],
     });
