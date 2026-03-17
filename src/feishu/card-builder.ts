@@ -46,6 +46,7 @@ function parseMarkdownTable(block: string): { headers: string[]; rows: string[][
 
 /**
  * Strip Markdown formatting from text, leaving plain content.
+ * Used for table headers where lark_md rendering is not supported.
  */
 function stripMarkdown(text: string): string {
   return text
@@ -64,14 +65,14 @@ function buildFeishuTableElement(table: { headers: string[]; rows: string[][] })
   const columns = table.headers.map((h, i) => ({
     name: `col_${i}`,
     display_name: stripMarkdown(h),
-    data_type: 'text' as const,
+    data_type: 'lark_md' as const,
     width: 'auto' as const,
   }));
 
   const rows = table.rows.map((row) => {
     const obj: Record<string, string> = {};
     table.headers.forEach((_, i) => {
-      obj[`col_${i}`] = stripMarkdown(row[i] ?? '');
+      obj[`col_${i}`] = row[i] ?? '';
     });
     return obj;
   });
