@@ -45,14 +45,27 @@ function parseMarkdownTable(block: string): { headers: string[]; rows: string[][
 }
 
 /**
+ * Strip Markdown formatting from text, leaving plain content.
+ * Used for table headers where lark_md rendering is not supported.
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+}
+
+/**
  * Convert a parsed Markdown table into a Feishu card table element.
  * Uses the Feishu card v2 table component with column_list and rows.
  */
 function buildFeishuTableElement(table: { headers: string[]; rows: string[][] }): unknown {
   const columns = table.headers.map((h, i) => ({
     name: `col_${i}`,
-    display_name: h,
-    data_type: 'text' as const,
+    display_name: stripMarkdown(h),
+    data_type: 'lark_md' as const,
     width: 'auto' as const,
   }));
 
