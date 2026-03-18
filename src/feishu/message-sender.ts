@@ -38,7 +38,6 @@ export class MessageSender {
       });
     } catch (err) {
       this.logger.error({ err, messageId }, 'Failed to update card');
-      throw err;
     }
   }
 

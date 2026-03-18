@@ -23,6 +23,9 @@ interface FeishuBotHandle {
   config: BotConfigBase;
   sender: IMessageSender;
   feishuClient: lark.Client;
+  dispatcher: lark.EventDispatcher;
+  botConfig: BotConfig;
+  lastWsActivity: number;
 }
 
 async function startFeishuBot(botConfig: BotConfig, logger: Logger, memoryServerUrl: string, memorySecret?: string): Promise<FeishuBotHandle> {
@@ -56,8 +59,12 @@ async function startFeishuBot(botConfig: BotConfig, logger: Logger, memoryServer
   const sender = new FeishuSenderAdapter(rawSender);
   const bridge = new MessageBridge(botConfig, botLogger, sender, memoryServerUrl, memorySecret);
 
+  // Track last WS activity for heartbeat detection
+  const handle: Partial<FeishuBotHandle> = { lastWsActivity: Date.now() };
+
   // Create event dispatcher wired to the bridge
   const dispatcher = createEventDispatcher(botConfig, botLogger, (msg) => {
+    handle.lastWsActivity = Date.now();
     bridge.handleMessage(msg).catch((err) => {
       botLogger.error({ err, msg }, 'Unhandled error in message bridge');
     });
@@ -81,7 +88,8 @@ async function startFeishuBot(botConfig: BotConfig, logger: Logger, memoryServer
     maxBudgetUsd: botConfig.claude.maxBudgetUsd ?? 'unlimited',
   }, 'Configuration');
 
-  return { name: botConfig.name, bridge, wsClient, config: botConfig, sender, feishuClient: client };
+  Object.assign(handle, { name: botConfig.name, bridge, wsClient, config: botConfig, sender, feishuClient: client, dispatcher, botConfig });
+  return handle as FeishuBotHandle;
 }
 
 async function main() {
@@ -133,6 +141,40 @@ async function main() {
 
   const allNames = [...feishuHandles.map((h) => h.name), ...telegramHandles.map((h) => h.name)];
   logger.info({ bots: allNames }, 'All bots started');
+
+  // WebSocket heartbeat: detect silent disconnects and force reconnect
+  const WS_CHECK_INTERVAL_MS = 10_000;    // Check every 10 seconds
+  const WS_IDLE_THRESHOLD_MS = 5 * 60_000; // Reconnect if no WS activity for 5 minutes
+  const wsReconnecting = new Set<string>();
+
+  const wsHeartbeatInterval = setInterval(async () => {
+    const now = Date.now();
+    for (const handle of feishuHandles) {
+      const idleMs = now - handle.lastWsActivity;
+      if (idleMs > WS_IDLE_THRESHOLD_MS && !wsReconnecting.has(handle.name)) {
+        wsReconnecting.add(handle.name);
+        const idleMin = Math.round(idleMs / 60_000);
+        logger.warn({ bot: handle.name, idleMinutes: idleMin }, 'WS idle too long, forcing reconnect');
+        try {
+          handle.wsClient.close();
+          // Create a fresh WSClient (reuse dispatcher)
+          const newWsClient = new lark.WSClient({
+            appId: handle.botConfig.feishu.appId,
+            appSecret: handle.botConfig.feishu.appSecret,
+            loggerLevel: lark.LoggerLevel.info,
+          });
+          await newWsClient.start({ eventDispatcher: handle.dispatcher });
+          handle.wsClient = newWsClient;
+          handle.lastWsActivity = Date.now();
+          logger.info({ bot: handle.name }, 'WS reconnected successfully');
+        } catch (err) {
+          logger.error({ bot: handle.name, err }, 'WS reconnect failed, will retry next cycle');
+        } finally {
+          wsReconnecting.delete(handle.name);
+        }
+      }
+    }
+  }, WS_CHECK_INTERVAL_MS);
 
   // Create task scheduler
   const scheduler = new TaskScheduler(registry, logger);
@@ -211,6 +253,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     logger.info('Shutting down...');
+    clearInterval(wsHeartbeatInterval);
     scheduler.destroy();
     apiServer.close();
     if (docSync) {
