@@ -65,7 +65,7 @@ function buildFeishuTableElement(table: { headers: string[]; rows: string[][] })
   const columns = table.headers.map((h, i) => ({
     name: `col_${i}`,
     display_name: stripMarkdown(h),
-    data_type: 'text' as const,
+    data_type: 'lark_md' as const,
     width: 'auto' as const,
   }));
 
@@ -283,6 +283,14 @@ export function buildCard(state: CardState): string {
     elements.push({
       tag: 'markdown',
       content: questionLines.join('\n'),
+    });
+  }
+
+  // Retry info (shown during 403 auto-retry)
+  if (state.retryInfo) {
+    elements.push({
+      tag: 'markdown',
+      content: `⏳ ${state.retryInfo}`,
     });
   }
 
