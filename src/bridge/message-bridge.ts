@@ -34,7 +34,7 @@ const RETRY_TIERS: Array<{ count: number; delayMs: number }> = [
   { count: 2, delayMs: 300_000 },  // tier 2: 2 retries, 5 min each
 ];
 
-function is403Error(err: unknown): boolean {
+export function is403Error(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as Record<string, unknown>;
   const msg = String(e.message || '');
@@ -42,7 +42,7 @@ function is403Error(err: unknown): boolean {
   return status === 403 || status === '403' || /\b403\b/.test(msg) || /forbidden/i.test(msg) || /rate.limit/i.test(msg);
 }
 
-function getRetryDelay(attempt: number): number | null {
+export function getRetryDelay(attempt: number): number | null {
   let remaining = attempt;
   for (const tier of RETRY_TIERS) {
     if (remaining < tier.count) return tier.delayMs;
@@ -467,7 +467,15 @@ export class MessageBridge {
             }
 
             // Break on final states
-            if (state.status === 'complete' || state.status === 'error') {
+            if (state.status === 'complete') {
+              streamDone = true;
+              break;
+            }
+            if (state.status === 'error') {
+              // Check if the error is a 403 — throw to trigger retry in catch block
+              if (state.errorMessage && is403Error({ message: state.errorMessage })) {
+                throw new Error(state.errorMessage);
+              }
               streamDone = true;
               break;
             }
@@ -769,7 +777,14 @@ export class MessageBridge {
               executionHandle.sendAnswer(tool.toolUseId, sid, response);
             }
 
-            if (state.status === 'complete' || state.status === 'error') {
+            if (state.status === 'complete') {
+              streamDone = true;
+              break;
+            }
+            if (state.status === 'error') {
+              if (state.errorMessage && is403Error({ message: state.errorMessage })) {
+                throw new Error(state.errorMessage);
+              }
               streamDone = true;
               break;
             }
