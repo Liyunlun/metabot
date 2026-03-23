@@ -2,9 +2,9 @@
 
 **Infrastructure for building a supervised, self-improving agent organization.**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/xvirobotics/metabot/ci.yml?branch=main&style=flat-square)](https://github.com/xvirobotics/metabot/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/Shiien/metabot/ci.yml?branch=main&style=flat-square)](https://github.com/Shiien/metabot/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-[![GitHub stars](https://img.shields.io/github/stars/xvirobotics/metabot?style=flat-square)](https://github.com/xvirobotics/metabot)
+[![GitHub stars](https://img.shields.io/github/stars/Shiien/metabot?style=flat-square)](https://github.com/Shiien/metabot)
 
 [English](#why) | [中文](README.md)
 
@@ -68,13 +68,13 @@ We built MetaBot to run [XVI Robotics](https://xvirobotics.com) as an **agent-na
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Shiien/metabot/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/xvirobotics/metabot/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Shiien/metabot/main/install.ps1 | iex
 ```
 
 The installer walks you through: working directory → Claude auth → IM platform (Feishu/Telegram/WeChat ClawBot) → auto-start with PM2. Choose WeChat and the installer will display a QR login URL after startup — scan to bind.
@@ -88,7 +88,7 @@ metabot update
 **Uninstall** — completely remove MetaBot, CLI tools, skills, and PM2 processes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Shiien/metabot/main/uninstall.sh | bash
 ```
 
 > **Windows notes:** The PowerShell installer auto-detects `winget`/`choco`/`scoop` for Node.js installation. CLI tools (`mm`, `mb`, `metabot`, `fd`) are installed with `.cmd` wrappers and require [Git for Windows](https://git-scm.com) (provides Git Bash).
@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/uninstall.
 <summary><strong>Manual install</strong></summary>
 
 ```bash
-git clone https://github.com/xvirobotics/metabot.git
+git clone https://github.com/Shiien/metabot.git
 cd metabot && npm install
 cp bots.example.json bots.json   # edit with your bot configs
 cp .env.example .env              # edit global settings
@@ -444,7 +444,7 @@ MetaBot is built by [XVI Robotics](https://xvirobotics.com), where we develop hu
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=xvirobotics/metabot&type=Date)](https://star-history.com/#xvirobotics/metabot&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Shiien/metabot&type=Date)](https://star-history.com/#Shiien/metabot&Date)
 
 ## License
 
