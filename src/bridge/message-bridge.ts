@@ -80,6 +80,7 @@ export interface ApiTaskOptions {
   chatId: string;
   userId?: string;
   sendCards?: boolean;
+  freshSession?: boolean;
 }
 
 export interface ApiTaskResult {
@@ -852,7 +853,13 @@ export class MessageBridge {
   }
 
   async executeApiTask(options: ApiTaskOptions): Promise<ApiTaskResult> {
-    const { prompt, chatId, userId = 'api', sendCards = false } = options;
+    const { prompt, chatId, userId = 'api', sendCards = false, freshSession = false } = options;
+
+    // Clear session before execution so each run starts with a clean context
+    if (freshSession) {
+      this.sessionManager.resetSession(chatId);
+      this.logger.info({ chatId }, 'Fresh session: cleared previous session');
+    }
 
     if (this.runningTasks.has(chatId)) {
       // Queue the API task and wait for it to complete instead of rejecting

@@ -258,6 +258,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
         const cronExpr = body.cronExpr as string | undefined;
         const delaySeconds = body.delaySeconds as number | undefined;
         const sendCards = body.sendCards as boolean | undefined;
+        const freshSession = body.freshSession as boolean | undefined;
         const label = body.label as string | undefined;
         const timezone = body.timezone as string | undefined;
 
@@ -275,7 +276,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
         if (cronExpr) {
           // Recurring task
           const recurring = scheduler.scheduleRecurring({
-            botName, chatId, prompt, cronExpr, timezone, sendCards, label,
+            botName, chatId, prompt, cronExpr, timezone, sendCards, freshSession, label,
           });
           jsonResponse(res, 201, {
             id: recurring.id,
@@ -287,13 +288,14 @@ export function startApiServer(options: ApiServerOptions): http.Server {
             timezone: recurring.timezone,
             nextExecuteAt: new Date(recurring.nextExecuteAt).toISOString(),
             sendCards: recurring.sendCards,
+            freshSession: recurring.freshSession,
             label: recurring.label,
             status: recurring.status,
           });
         } else if (typeof delaySeconds === 'number' && delaySeconds > 0) {
           // One-time task (existing behavior)
           const task = scheduler.scheduleTask({
-            botName, chatId, prompt, delaySeconds, sendCards, label,
+            botName, chatId, prompt, delaySeconds, sendCards, freshSession, label,
           });
           jsonResponse(res, 201, {
             id: task.id,
@@ -303,6 +305,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
             prompt: task.prompt,
             executeAt: new Date(task.executeAt).toISOString(),
             sendCards: task.sendCards,
+            freshSession: task.freshSession,
             label: task.label,
             status: task.status,
           });
@@ -322,6 +325,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
           prompt: t.prompt,
           executeAt: new Date(t.executeAt).toISOString(),
           sendCards: t.sendCards,
+          freshSession: t.freshSession,
           label: t.label,
           status: t.status,
           createdAt: new Date(t.createdAt).toISOString(),
@@ -337,6 +341,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
           nextExecuteAt: new Date(r.nextExecuteAt).toISOString(),
           lastExecutedAt: r.lastExecutedAt ? new Date(r.lastExecutedAt).toISOString() : null,
           sendCards: r.sendCards,
+          freshSession: r.freshSession,
           label: r.label,
           status: r.status,
           createdAt: new Date(r.createdAt).toISOString(),
@@ -390,6 +395,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
           delaySeconds: body.delaySeconds as number | undefined,
           label: body.label as string | undefined,
           sendCards: body.sendCards as boolean | undefined,
+          freshSession: body.freshSession as boolean | undefined,
         });
 
         if (updated) {
@@ -401,6 +407,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
             prompt: updated.prompt,
             executeAt: new Date(updated.executeAt).toISOString(),
             sendCards: updated.sendCards,
+            freshSession: updated.freshSession,
             label: updated.label,
             status: updated.status,
           });
@@ -414,6 +421,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
           timezone: body.timezone as string | undefined,
           label: body.label as string | undefined,
           sendCards: body.sendCards as boolean | undefined,
+          freshSession: body.freshSession as boolean | undefined,
         });
 
         if (updatedRecurring) {
@@ -427,6 +435,7 @@ export function startApiServer(options: ApiServerOptions): http.Server {
             timezone: updatedRecurring.timezone,
             nextExecuteAt: new Date(updatedRecurring.nextExecuteAt).toISOString(),
             sendCards: updatedRecurring.sendCards,
+            freshSession: updatedRecurring.freshSession,
             label: updatedRecurring.label,
             status: updatedRecurring.status,
           });

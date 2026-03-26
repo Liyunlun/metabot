@@ -15,6 +15,7 @@ export interface ScheduledTask {
   prompt: string;
   executeAt: number;       // Unix ms
   sendCards: boolean;
+  freshSession: boolean;   // if true, clear session before execution (no context carry-over)
   label?: string;
   status: 'pending' | 'executing' | 'completed' | 'failed' | 'cancelled';
   createdAt: number;
@@ -28,6 +29,7 @@ export interface ScheduleInput {
   prompt: string;
   delaySeconds: number;
   sendCards?: boolean;
+  freshSession?: boolean;
   label?: string;
 }
 
@@ -36,6 +38,7 @@ export interface ScheduleUpdateInput {
   delaySeconds?: number;
   label?: string;
   sendCards?: boolean;
+  freshSession?: boolean;
 }
 
 // --- Recurring task types ---
@@ -48,6 +51,7 @@ export interface RecurringTask {
   cronExpr: string;           // 5-field cron: "minute hour dom month dow"
   timezone: string;           // IANA timezone, e.g. "Asia/Shanghai"
   sendCards: boolean;
+  freshSession: boolean;      // if true, clear session before each execution
   label?: string;
   status: 'active' | 'paused' | 'cancelled';
   createdAt: number;          // Unix ms
@@ -63,6 +67,7 @@ export interface RecurringScheduleInput {
   cronExpr: string;
   timezone?: string;
   sendCards?: boolean;
+  freshSession?: boolean;
   label?: string;
 }
 
@@ -72,6 +77,7 @@ export interface RecurringUpdateInput {
   timezone?: string;
   label?: string;
   sendCards?: boolean;
+  freshSession?: boolean;
 }
 
 // --- Persistence format ---
@@ -118,6 +124,7 @@ export class TaskScheduler {
       prompt: input.prompt,
       executeAt: now + input.delaySeconds * 1000,
       sendCards: input.sendCards ?? true,
+      freshSession: input.freshSession ?? false,
       label: input.label,
       status: 'pending',
       createdAt: now,
@@ -139,6 +146,7 @@ export class TaskScheduler {
     if (input.prompt !== undefined) task.prompt = input.prompt;
     if (input.label !== undefined) task.label = input.label;
     if (input.sendCards !== undefined) task.sendCards = input.sendCards;
+    if (input.freshSession !== undefined) task.freshSession = input.freshSession;
 
     if (input.delaySeconds !== undefined) {
       task.executeAt = Date.now() + input.delaySeconds * 1000;
@@ -196,6 +204,7 @@ export class TaskScheduler {
       cronExpr: input.cronExpr,
       timezone: tz,
       sendCards: input.sendCards ?? true,
+      freshSession: input.freshSession ?? false,
       label: input.label,
       status: 'active',
       createdAt: now,
@@ -220,6 +229,7 @@ export class TaskScheduler {
     if (input.prompt !== undefined) recurring.prompt = input.prompt;
     if (input.label !== undefined) recurring.label = input.label;
     if (input.sendCards !== undefined) recurring.sendCards = input.sendCards;
+    if (input.freshSession !== undefined) recurring.freshSession = input.freshSession;
 
     let recomputeNext = false;
     if (input.cronExpr !== undefined) {
@@ -384,6 +394,7 @@ export class TaskScheduler {
         chatId: task.chatId,
         userId: 'scheduler',
         sendCards: task.sendCards,
+        freshSession: task.freshSession,
       });
 
       task.status = result.success ? 'completed' : 'failed';
@@ -433,6 +444,7 @@ export class TaskScheduler {
       prompt: recurring.prompt,
       executeAt: Date.now(),
       sendCards: recurring.sendCards,
+      freshSession: recurring.freshSession,
       label: recurring.label ? `${recurring.label} (recurring)` : undefined,
       status: 'pending',
       createdAt: Date.now(),
@@ -512,6 +524,9 @@ export class TaskScheduler {
 
       // Restore one-time tasks
       for (const task of taskList) {
+        // Backward compat: default freshSession to false for old tasks
+        if (task.freshSession === undefined) task.freshSession = false;
+
         // Skip completed/cancelled/failed tasks
         if (task.status !== 'pending') continue;
 
@@ -527,6 +542,9 @@ export class TaskScheduler {
 
       // Restore recurring tasks
       for (const recurring of recurringList) {
+        // Backward compat: default freshSession to false for old tasks
+        if (recurring.freshSession === undefined) (recurring as any).freshSession = false;
+
         if (recurring.status === 'cancelled') continue;
 
         this.recurringTasks.set(recurring.id, recurring);
