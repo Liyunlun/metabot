@@ -77,7 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/install.sh
 irm https://raw.githubusercontent.com/xvirobotics/metabot/main/install.ps1 | iex
 ```
 
-The installer walks you through: working directory → Claude auth → IM platform (Feishu/Telegram/WeChat ClawBot) → auto-start with PM2. Choose WeChat and the installer will display a QR login URL after startup — scan to bind.
+The installer walks you through: working directory → Claude auth → IM platform (Feishu/Telegram/WeChat ClawBot) → auto-start with PM2. Choose WeChat and the installer will display a QR login URL after startup — scan to bind. Feishu users can optionally install lark-cli and 19 AI Agent Skills (prompted during install).
 
 **Update anytime** — already installed? One command to pull, rebuild, and restart:
 
@@ -91,7 +91,7 @@ metabot update
 curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/uninstall.sh | bash
 ```
 
-> **Windows notes:** The PowerShell installer auto-detects `winget`/`choco`/`scoop` for Node.js installation. CLI tools (`mm`, `mb`, `metabot`, `fd`) are installed with `.cmd` wrappers and require [Git for Windows](https://git-scm.com) (provides Git Bash).
+> **Windows notes:** The PowerShell installer auto-detects `winget`/`choco`/`scoop` for Node.js installation. CLI tools (`mm`, `mb`, `metabot`) are installed with `.cmd` wrappers and require [Git for Windows](https://git-scm.com) (provides Git Bash).
 
 <details>
 <summary><strong>Manual install</strong></summary>
@@ -286,6 +286,7 @@ checks service health, reviews overnight error logs, and posts a summary.
 | `wechatBotToken` | WeChat (opt) | — | Pre-authenticated iLink token (omit for QR login) |
 | `maxTurns` / `maxBudgetUsd` | No | unlimited | Execution limits |
 | `model` | No | SDK default | Claude model |
+| `apiKey` | No | — | Explicit Anthropic API key (leave unset to read from `~/.claude/.credentials.json` dynamically, compatible with cc-switch) |
 
 </details>
 
@@ -329,6 +330,27 @@ ANTHROPIC_BASE_URL=https://api.moonshot.ai/anthropic    # Kimi/Moonshot
 ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic   # DeepSeek
 ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic       # GLM/Zhipu
 ANTHROPIC_AUTH_TOKEN=your-key
+```
+
+</details>
+
+<details>
+<summary><strong>cc-switch compatibility</strong></summary>
+
+MetaBot is compatible with [cc-switch](https://github.com/farion1231/cc-switch), [cc-switch-cli](https://github.com/SaladDay/cc-switch-cli), [CCS](https://github.com/kaitranntt/ccs), and other auth switching tools.
+
+MetaBot does not inherit `ANTHROPIC_API_KEY` from the PM2 process environment. Instead, each Claude Code subprocess resolves auth dynamically from `~/.claude/.credentials.json`. Switching between API/subscription mode via `cc switch` takes effect **without restarting** MetaBot.
+
+To pin a specific API key, set the `apiKey` field in `bots.json`:
+
+```json
+{
+  "feishuBots": [{
+    "name": "metabot",
+    "apiKey": "sk-ant-api03-...",
+    "..."
+  }]
+}
 ```
 
 </details>
@@ -387,7 +409,7 @@ MetaBot runs Claude Code in `bypassPermissions` mode — no interactive approval
 
 ## CLI Tools
 
-The installer places `metabot`, `mm`, `mb`, and `fd` (Feishu bots only) executables in `~/.local/bin/` (Linux/macOS) or `%USERPROFILE%\.local\bin\` with `.cmd` wrappers (Windows) — available immediately.
+The installer places `metabot`, `mm`, `mb` executables in `~/.local/bin/` (Linux/macOS) or `%USERPROFILE%\.local\bin\` with `.cmd` wrappers (Windows) — available immediately.
 
 ```bash
 # MetaBot management
