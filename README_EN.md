@@ -255,7 +255,7 @@ Supported: text, images (Claude multimodal), files (PDF/code/docs), rich text (P
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_PORT` | 9100 | HTTP API port |
-| `API_SECRET` | — | Bearer token auth (protects API + Web UI) |
+| `API_SECRET` | — | Bearer token auth (protects API + Web UI). Generate one with `openssl rand -hex 32` |
 | `MEMORY_ENABLED` | true | Enable MetaMemory |
 | `MEMORY_PORT` | 8100 | MetaMemory port |
 | `MEMORY_ADMIN_TOKEN` | — | Admin token (full access) |
@@ -265,9 +265,9 @@ Supported: text, images (Claude multimodal), files (PDF/code/docs), rich text (P
 | `WIKI_AUTO_SYNC` | true | Auto-sync on changes |
 | `VOLCENGINE_TTS_APPID` | — | Doubao voice (TTS + STT) |
 | `VOLCENGINE_TTS_ACCESS_KEY` | — | Doubao voice key |
-| `METABOT_URL` | `http://localhost:9100` | MetaBot API URL |
-| `META_MEMORY_URL` | `http://localhost:8100` | MetaMemory server URL |
-| `METABOT_PEERS` | — | Peer MetaBot URLs (comma-separated) |
+| `METABOT_URL` | `http://localhost:9100` | MetaBot API URL. Default is local HTTP; for remote access prefer HTTPS or a private-network address |
+| `META_MEMORY_URL` | `http://localhost:8100` | MetaMemory server URL. Default is local HTTP; for remote access prefer HTTPS or a private-network address |
+| `METABOT_PEERS` | — | Peer MetaBot URLs (comma-separated). Prefer HTTPS for internet-reachable peers |
 | `LOG_LEVEL` | info | Log level |
 
 </details>
