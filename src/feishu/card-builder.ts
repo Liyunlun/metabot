@@ -169,7 +169,7 @@ function splitMarkdownWithTables(text: string): unknown[] {
     // Add preceding text as markdown
     const before = text.slice(lastIndex, matchStart).trim();
     if (before) {
-      elements.push({ tag: 'markdown', content: truncateContent(before) });
+      elements.push({ tag: 'markdown', content: sanitizeLarkMd(truncateContent(before)) });
     }
 
     // Try to parse and convert the table
@@ -187,10 +187,19 @@ function splitMarkdownWithTables(text: string): unknown[] {
   // Add remaining text
   const remaining = text.slice(lastIndex).trim();
   if (remaining) {
-    elements.push({ tag: 'markdown', content: truncateContent(remaining) });
+    elements.push({ tag: 'markdown', content: sanitizeLarkMd(truncateContent(remaining)) });
   }
 
   return elements;
+}
+
+/**
+ * Sanitize markdown for Feishu lark_md: strip image syntax ![alt](url) → [alt](url).
+ * Feishu lark_md interprets ![img](key) as an uploaded image requiring a valid image_key.
+ * Passing a URL or file path instead causes error 11310 and breaks the entire card update.
+ */
+function sanitizeLarkMd(text: string): string {
+  return text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '[$1]($2)');
 }
 
 function truncateContent(text: string, maxLen: number = MAX_CONTENT_LENGTH): string {
@@ -303,7 +312,7 @@ export function buildCard(state: CardState): string {
       elements: [
         {
           tag: 'markdown',
-          content: detailLines.join('\n\n'),
+          content: sanitizeLarkMd(detailLines.join('\n\n')),
         },
       ],
     });
