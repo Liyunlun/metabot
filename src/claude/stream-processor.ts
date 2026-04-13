@@ -31,6 +31,8 @@ export class StreamProcessor {
   private thinkingText = '';
   /** Text from the just-completed turn, consumed by the bridge after sending */
   private _completedTurnText: string | undefined;
+  /** Last turn text emitted, used to deduplicate against SDK result */
+  private _lastSentTurnText: string | undefined;
   /** SDK result text, stored separately so it doesn't overwrite responseText */
   private _resultSummary: string | undefined;
   private toolCalls: ToolCall[] = [];
@@ -169,6 +171,7 @@ export class StreamProcessor {
         // Emit completed turn text for the bridge to send as a separate message.
         // Then reset responseText so the card is clean for the next turn's streaming.
         this._completedTurnText = block.text;
+        this._lastSentTurnText = block.text;
         this.responseText = '';
       } else if (block.type === 'tool_use' && block.name) {
         this.addToolCall(block.name, block.input);
@@ -376,9 +379,9 @@ export class StreamProcessor {
     // SDK sometimes wraps API errors as "success" with the error text as result
     const isApiError = !isError && isApiErrorResult(resultText);
 
-    // Store result separately — it will be sent as its own message with stats.
-    // Don't overwrite responseText (which is empty after per-turn emission).
-    this._resultSummary = resultText || undefined;
+    // Store result separately — only if it differs from the last turn text already sent.
+    // SDK result often echoes the last assistant message; skip to avoid duplication.
+    this._resultSummary = (resultText && resultText !== this._lastSentTurnText) ? resultText : undefined;
 
     return {
       status: (isError || isApiError) ? 'error' : 'complete',

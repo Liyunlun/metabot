@@ -508,12 +508,7 @@ export function buildTextCard(title: string, content: string, color: string = 'b
         tag: 'plain_text',
       },
     },
-    elements: [
-      {
-        tag: 'markdown',
-        content,
-      },
-    ],
+    elements: splitMarkdownWithTables(content),
   };
   return JSON.stringify(card);
 }

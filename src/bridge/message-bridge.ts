@@ -641,12 +641,14 @@ export class MessageBridge {
       startTime: taskStartTime,
     };
 
-    const messageId = await this.sender.sendCard(chatId, initialState);
+    const initialCardId = await this.sender.sendCard(chatId, initialState);
 
-    if (!messageId) {
+    if (!initialCardId) {
       this.logger.error('Failed to send initial card, aborting');
       return;
     }
+
+    let messageId: string = initialCardId;
 
     const apiContext = { botName: this.config.name, chatId };
 
@@ -733,6 +735,7 @@ export class MessageBridge {
             if (state.completedTurnText && chatId) {
               await rateLimiter.flush();
               await this.sendTurnText(chatId, state.completedTurnText);
+              messageId = await this.recreateCard(chatId, messageId, state);
             }
 
             // Update session ID if discovered
@@ -923,6 +926,7 @@ export class MessageBridge {
           if (state.completedTurnText && chatId) {
             await rateLimiter.flush();
             await this.sendTurnText(chatId, state.completedTurnText);
+            messageId = await this.recreateCard(chatId, messageId, state);
           }
           const newSid = processor.getSessionId();
           if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -991,6 +995,7 @@ export class MessageBridge {
             if (state.completedTurnText && chatId) {
               await rateLimiter.flush();
               await this.sendTurnText(chatId, state.completedTurnText);
+              messageId = await this.recreateCard(chatId, messageId, state);
             }
             const newSid = processor.getSessionId();
             if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -1220,6 +1225,9 @@ export class MessageBridge {
             if (state.completedTurnText && chatId) {
               await rateLimiter.flush();
               await this.sendTurnText(chatId, state.completedTurnText);
+              if (messageId) {
+                messageId = await this.recreateCard(chatId, messageId, state);
+              }
             }
 
             const newSessionId = processor.getSessionId();
@@ -1363,6 +1371,9 @@ export class MessageBridge {
           if (state.completedTurnText && chatId) {
             await rateLimiter.flush();
             await this.sendTurnText(chatId, state.completedTurnText);
+            if (messageId) {
+              messageId = await this.recreateCard(chatId, messageId, state);
+            }
           }
           const newSid = processor.getSessionId();
           if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -1442,6 +1453,9 @@ export class MessageBridge {
             if (state.completedTurnText && chatId) {
               await rateLimiter.flush();
               await this.sendTurnText(chatId, state.completedTurnText);
+              if (messageId) {
+                messageId = await this.recreateCard(chatId, messageId, state);
+              }
             }
             const newSid = processor.getSessionId();
             if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -1582,6 +1596,29 @@ export class MessageBridge {
         this.logger.warn({ err, chatId, chunk: i + 1, total }, 'Failed to send turn text');
       }
     }
+  }
+
+  /**
+   * Freeze old card and create a new one at the bottom so the card stays below 💬 messages.
+   * Returns the new messageId, or the old one if card creation failed.
+   */
+  private async recreateCard(chatId: string, oldMessageId: string, state: CardState): Promise<string> {
+    // Freeze old card: clear response text (already sent as 💬)
+    try {
+      await this.sender.updateCard(oldMessageId, { ...state, responseText: '' });
+    } catch { /* best effort */ }
+    // Create new card at bottom for next turn
+    try {
+      const newId = await this.sender.sendCard(chatId, {
+        status: 'thinking',
+        userPrompt: state.userPrompt,
+        responseText: '',
+        toolCalls: [],
+        startTime: state.startTime,
+      });
+      if (newId) return newId;
+    } catch { /* fall back to old card */ }
+    return oldMessageId;
   }
 
   /**
