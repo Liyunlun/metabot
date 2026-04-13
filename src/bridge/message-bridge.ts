@@ -23,6 +23,7 @@ import type { SessionRegistry } from '../session/session-registry.js';
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
 const MAX_QUEUE_SIZE = 5; // max queued messages per chat
+const TURN_MERGE_THRESHOLD = 300; // buffer short turns until combined text reaches this length
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour idle → abort
 const FINAL_CARD_RETRIES = 3;
 const MAX_CONSECUTIVE_AUTO_ANSWERS = 3; // abort after this many unanswered permission prompts in a row
@@ -649,6 +650,7 @@ export class MessageBridge {
     }
 
     let messageId: string = initialCardId;
+    let turnBuffer = '';
 
     const apiContext = { botName: this.config.name, chatId };
 
@@ -731,11 +733,15 @@ export class MessageBridge {
             const state = processor.processMessage(message);
             lastState = state;
 
-            // Per-turn message: send completed turn text as a separate message
+            // Per-turn message: buffer short turns, send when threshold is met
             if (state.completedTurnText && chatId) {
-              await rateLimiter.flush();
-              await this.sendTurnText(chatId, state.completedTurnText);
-              messageId = await this.recreateCard(chatId, messageId, state);
+              turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+              if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+                await rateLimiter.flush();
+                await this.sendTurnText(chatId, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state);
+                turnBuffer = '';
+              }
             }
 
             // Update session ID if discovered
@@ -924,9 +930,13 @@ export class MessageBridge {
           const state = processor.processMessage(message);
           lastState = state;
           if (state.completedTurnText && chatId) {
-            await rateLimiter.flush();
-            await this.sendTurnText(chatId, state.completedTurnText);
-            messageId = await this.recreateCard(chatId, messageId, state);
+            turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+            if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+              await rateLimiter.flush();
+              await this.sendTurnText(chatId, turnBuffer);
+              messageId = await this.recreateCard(chatId, messageId, state);
+              turnBuffer = '';
+            }
           }
           const newSid = processor.getSessionId();
           if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -936,6 +946,12 @@ export class MessageBridge {
         await rateLimiter.cancelAndWait();
       }
 
+      // Flush remaining turn buffer before final card
+      if (turnBuffer && chatId) {
+        await this.sendTurnText(chatId, turnBuffer);
+        messageId = await this.recreateCard(chatId, messageId, lastState);
+        turnBuffer = '';
+      }
       await this.sendFinalCard(messageId, lastState, chatId);
 
       // Audit + cost tracking
@@ -993,9 +1009,13 @@ export class MessageBridge {
             const state = processor.processMessage(message);
             lastState = state;
             if (state.completedTurnText && chatId) {
-              await rateLimiter.flush();
-              await this.sendTurnText(chatId, state.completedTurnText);
-              messageId = await this.recreateCard(chatId, messageId, state);
+              turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+              if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+                await rateLimiter.flush();
+                await this.sendTurnText(chatId, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state);
+                turnBuffer = '';
+              }
             }
             const newSid = processor.getSessionId();
             if (newSid) this.sessionManager.setSessionId(chatId, newSid);
@@ -1003,6 +1023,11 @@ export class MessageBridge {
             rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
           }
           await rateLimiter.cancelAndWait();
+          if (turnBuffer && chatId) {
+            await this.sendTurnText(chatId, turnBuffer);
+            messageId = await this.recreateCard(chatId, messageId, lastState);
+            turnBuffer = '';
+          }
           await this.sendFinalCard(messageId, lastState, chatId);
 
           const durationMs = Date.now() - startTime;
@@ -1053,6 +1078,11 @@ export class MessageBridge {
         errorMessage: err.message || 'Unknown error',
       };
       await rateLimiter.cancelAndWait();
+      if (turnBuffer && chatId) {
+        await this.sendTurnText(chatId, turnBuffer);
+        messageId = await this.recreateCard(chatId, messageId, lastState);
+        turnBuffer = '';
+      }
       await this.sendFinalCard(messageId, errorState, chatId);
     } finally {
       clearInterval(thinkingTimerId);
@@ -1138,6 +1168,7 @@ export class MessageBridge {
     };
 
     let messageId: string | undefined;
+    let turnBuffer = '';
     if (sendCards) {
       messageId = await this.sender.sendCard(chatId, initialState);
     }
@@ -1221,12 +1252,16 @@ export class MessageBridge {
             const state = processor.processMessage(message);
             lastState = state;
 
-            // Per-turn message: send completed turn text as a separate message
+            // Per-turn message: buffer short turns, send when threshold is met
             if (state.completedTurnText && chatId) {
-              await rateLimiter.flush();
-              await this.sendTurnText(chatId, state.completedTurnText);
-              if (messageId) {
-                messageId = await this.recreateCard(chatId, messageId, state);
+              turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+              if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+                await rateLimiter.flush();
+                await this.sendTurnText(chatId, turnBuffer);
+                if (messageId) {
+                  messageId = await this.recreateCard(chatId, messageId, state);
+                }
+                turnBuffer = '';
               }
             }
 
@@ -1369,10 +1404,14 @@ export class MessageBridge {
           const state = processor.processMessage(message);
           lastState = state;
           if (state.completedTurnText && chatId) {
-            await rateLimiter.flush();
-            await this.sendTurnText(chatId, state.completedTurnText);
-            if (messageId) {
-              messageId = await this.recreateCard(chatId, messageId, state);
+            turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+            if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+              await rateLimiter.flush();
+              await this.sendTurnText(chatId, turnBuffer);
+              if (messageId) {
+                messageId = await this.recreateCard(chatId, messageId, state);
+              }
+              turnBuffer = '';
             }
           }
           const newSid = processor.getSessionId();
@@ -1386,6 +1425,11 @@ export class MessageBridge {
         await rateLimiter.cancelAndWait();
       }
 
+      if (turnBuffer && chatId && messageId) {
+        await this.sendTurnText(chatId, turnBuffer);
+        messageId = await this.recreateCard(chatId, messageId, lastState);
+        turnBuffer = '';
+      }
       if (sendCards && messageId) {
         await this.sendFinalCard(messageId, lastState, chatId);
       }
@@ -1451,10 +1495,14 @@ export class MessageBridge {
             const state = processor.processMessage(message);
             lastState = state;
             if (state.completedTurnText && chatId) {
-              await rateLimiter.flush();
-              await this.sendTurnText(chatId, state.completedTurnText);
-              if (messageId) {
-                messageId = await this.recreateCard(chatId, messageId, state);
+              turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
+              if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
+                await rateLimiter.flush();
+                await this.sendTurnText(chatId, turnBuffer);
+                if (messageId) {
+                  messageId = await this.recreateCard(chatId, messageId, state);
+                }
+                turnBuffer = '';
               }
             }
             const newSid = processor.getSessionId();
@@ -1467,6 +1515,11 @@ export class MessageBridge {
           }
           await rateLimiter.cancelAndWait();
 
+          if (turnBuffer && chatId && messageId) {
+            await this.sendTurnText(chatId, turnBuffer);
+            messageId = await this.recreateCard(chatId, messageId, lastState);
+            turnBuffer = '';
+          }
           if (sendCards && messageId) {
             await this.sendFinalCard(messageId, lastState, chatId);
           }
@@ -1502,6 +1555,11 @@ export class MessageBridge {
           errorMessage: err.message || 'Unknown error',
         };
         await rateLimiter.cancelAndWait();
+        if (turnBuffer && chatId && messageId) {
+          await this.sendTurnText(chatId, turnBuffer);
+          messageId = await this.recreateCard(chatId, messageId, lastState);
+          turnBuffer = '';
+        }
         await this.sendFinalCard(messageId, errorState, chatId);
       }
 
