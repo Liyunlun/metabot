@@ -738,9 +738,10 @@ export class MessageBridge {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
-                await this.sendTurnText(chatId, turnBuffer);
-                messageId = await this.recreateCard(chatId, messageId, state);
-                turnBuffer = '';
+                if (await this.sendTurnText(chatId, turnBuffer)) {
+                  messageId = await this.recreateCard(chatId, messageId, state);
+                  turnBuffer = '';
+                }
               }
             }
 
@@ -933,9 +934,10 @@ export class MessageBridge {
             turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
             if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
               await rateLimiter.flush();
-              await this.sendTurnText(chatId, turnBuffer);
-              messageId = await this.recreateCard(chatId, messageId, state);
-              turnBuffer = '';
+              if (await this.sendTurnText(chatId, turnBuffer)) {
+                messageId = await this.recreateCard(chatId, messageId, state);
+                turnBuffer = '';
+              }
             }
           }
           const newSid = processor.getSessionId();
@@ -948,11 +950,12 @@ export class MessageBridge {
 
       // Flush remaining turn buffer before final card
       if (turnBuffer && chatId) {
-        await this.sendTurnText(chatId, turnBuffer);
-        messageId = await this.recreateCard(chatId, messageId, lastState);
-        turnBuffer = '';
+        if (await this.sendTurnText(chatId, turnBuffer)) {
+          messageId = await this.recreateCard(chatId, messageId, lastState);
+          turnBuffer = '';
+        }
       }
-      await this.sendFinalCard(messageId, lastState, chatId);
+      await this.sendFinalCard(messageId, lastState, chatId, turnBuffer || undefined);
 
       // Audit + cost tracking
       const durationMs = Date.now() - startTime;
@@ -1012,9 +1015,10 @@ export class MessageBridge {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
-                await this.sendTurnText(chatId, turnBuffer);
-                messageId = await this.recreateCard(chatId, messageId, state);
-                turnBuffer = '';
+                if (await this.sendTurnText(chatId, turnBuffer)) {
+                  messageId = await this.recreateCard(chatId, messageId, state);
+                  turnBuffer = '';
+                }
               }
             }
             const newSid = processor.getSessionId();
@@ -1024,11 +1028,12 @@ export class MessageBridge {
           }
           await rateLimiter.cancelAndWait();
           if (turnBuffer && chatId) {
-            await this.sendTurnText(chatId, turnBuffer);
-            messageId = await this.recreateCard(chatId, messageId, lastState);
-            turnBuffer = '';
+            if (await this.sendTurnText(chatId, turnBuffer)) {
+              messageId = await this.recreateCard(chatId, messageId, lastState);
+              turnBuffer = '';
+            }
           }
-          await this.sendFinalCard(messageId, lastState, chatId);
+          await this.sendFinalCard(messageId, lastState, chatId, turnBuffer || undefined);
 
           const durationMs = Date.now() - startTime;
           this.audit.log({
@@ -1079,11 +1084,12 @@ export class MessageBridge {
       };
       await rateLimiter.cancelAndWait();
       if (turnBuffer && chatId) {
-        await this.sendTurnText(chatId, turnBuffer);
-        messageId = await this.recreateCard(chatId, messageId, lastState);
-        turnBuffer = '';
+        if (await this.sendTurnText(chatId, turnBuffer)) {
+          messageId = await this.recreateCard(chatId, messageId, lastState);
+          turnBuffer = '';
+        }
       }
-      await this.sendFinalCard(messageId, errorState, chatId);
+      await this.sendFinalCard(messageId, errorState, chatId, turnBuffer || undefined);
     } finally {
       clearInterval(thinkingTimerId);
       clearTimeout(timeoutId);
@@ -1257,11 +1263,12 @@ export class MessageBridge {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
-                await this.sendTurnText(chatId, turnBuffer);
-                if (messageId) {
-                  messageId = await this.recreateCard(chatId, messageId, state);
+                if (await this.sendTurnText(chatId, turnBuffer)) {
+                  if (messageId) {
+                    messageId = await this.recreateCard(chatId, messageId, state);
+                  }
+                  turnBuffer = '';
                 }
-                turnBuffer = '';
               }
             }
 
@@ -1407,11 +1414,12 @@ export class MessageBridge {
             turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
             if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
               await rateLimiter.flush();
-              await this.sendTurnText(chatId, turnBuffer);
-              if (messageId) {
-                messageId = await this.recreateCard(chatId, messageId, state);
+              if (await this.sendTurnText(chatId, turnBuffer)) {
+                if (messageId) {
+                  messageId = await this.recreateCard(chatId, messageId, state);
+                }
+                turnBuffer = '';
               }
-              turnBuffer = '';
             }
           }
           const newSid = processor.getSessionId();
@@ -1426,12 +1434,13 @@ export class MessageBridge {
       }
 
       if (turnBuffer && chatId && messageId) {
-        await this.sendTurnText(chatId, turnBuffer);
-        messageId = await this.recreateCard(chatId, messageId, lastState);
-        turnBuffer = '';
+        if (await this.sendTurnText(chatId, turnBuffer)) {
+          messageId = await this.recreateCard(chatId, messageId, lastState);
+          turnBuffer = '';
+        }
       }
       if (sendCards && messageId) {
-        await this.sendFinalCard(messageId, lastState, chatId);
+        await this.sendFinalCard(messageId, lastState, chatId, turnBuffer || undefined);
       }
       options.onUpdate?.(lastState, effectiveMessageId, true);
 
@@ -1498,11 +1507,12 @@ export class MessageBridge {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
-                await this.sendTurnText(chatId, turnBuffer);
-                if (messageId) {
-                  messageId = await this.recreateCard(chatId, messageId, state);
+                if (await this.sendTurnText(chatId, turnBuffer)) {
+                  if (messageId) {
+                    messageId = await this.recreateCard(chatId, messageId, state);
+                  }
+                  turnBuffer = '';
                 }
-                turnBuffer = '';
               }
             }
             const newSid = processor.getSessionId();
@@ -1516,12 +1526,13 @@ export class MessageBridge {
           await rateLimiter.cancelAndWait();
 
           if (turnBuffer && chatId && messageId) {
-            await this.sendTurnText(chatId, turnBuffer);
-            messageId = await this.recreateCard(chatId, messageId, lastState);
-            turnBuffer = '';
+            if (await this.sendTurnText(chatId, turnBuffer)) {
+              messageId = await this.recreateCard(chatId, messageId, lastState);
+              turnBuffer = '';
+            }
           }
           if (sendCards && messageId) {
-            await this.sendFinalCard(messageId, lastState, chatId);
+            await this.sendFinalCard(messageId, lastState, chatId, turnBuffer || undefined);
           }
           options.onUpdate?.(lastState, effectiveMessageId, true);
 
@@ -1556,11 +1567,12 @@ export class MessageBridge {
         };
         await rateLimiter.cancelAndWait();
         if (turnBuffer && chatId && messageId) {
-          await this.sendTurnText(chatId, turnBuffer);
-          messageId = await this.recreateCard(chatId, messageId, lastState);
-          turnBuffer = '';
+          if (await this.sendTurnText(chatId, turnBuffer)) {
+            messageId = await this.recreateCard(chatId, messageId, lastState);
+            turnBuffer = '';
+          }
         }
-        await this.sendFinalCard(messageId, errorState, chatId);
+        await this.sendFinalCard(messageId, errorState, chatId, turnBuffer || undefined);
       }
 
       const catchErrorState: CardState = {
@@ -1598,9 +1610,9 @@ export class MessageBridge {
    * Retries with exponential backoff (2s → 4s → 8s). If all retries fail,
    * sends a plain text fallback so the user at least sees the result.
    */
-  private async sendFinalCard(messageId: string, state: CardState, chatId?: string): Promise<void> {
-    // Main card: status-only (response text was sent per-turn, result goes as separate message)
-    const cardState = { ...state, responseText: '' };
+  private async sendFinalCard(messageId: string, state: CardState, chatId?: string, unsentText?: string): Promise<void> {
+    // If there's unsent turn text (💬 failed), fall back to showing it in the card
+    const cardState = { ...state, responseText: unsentText || '' };
 
     let updateSucceeded = false;
     for (let attempt = 0; attempt < FINAL_CARD_RETRIES; attempt++) {
@@ -1640,20 +1652,24 @@ export class MessageBridge {
   /**
    * Send completed turn text as one or more separate text messages.
    * Splits long text using the same logic as continuation cards.
+   * Returns true if at least the first chunk was sent successfully.
    */
-  private async sendTurnText(chatId: string, text: string): Promise<void> {
+  private async sendTurnText(chatId: string, text: string): Promise<boolean> {
     const chunks = splitResponseText(text);
     const total = chunks.length;
+    let sentAny = false;
 
     for (let i = 0; i < total; i++) {
       try {
         if (i > 0) await new Promise((r) => setTimeout(r, 1500));
         const title = total > 1 ? `💬 (${i + 1}/${total})` : '💬';
         await this.sender.sendTextNotice(chatId, title, chunks[i], 'blue');
+        sentAny = true;
       } catch (err) {
         this.logger.warn({ err, chatId, chunk: i + 1, total }, 'Failed to send turn text');
       }
     }
+    return sentAny;
   }
 
   /**
@@ -1661,9 +1677,9 @@ export class MessageBridge {
    * Returns the new messageId, or the old one if card creation failed.
    */
   private async recreateCard(chatId: string, oldMessageId: string, state: CardState): Promise<string> {
-    // Freeze old card: clear response text (already sent as 💬)
+    // Freeze old card: mark complete, clear response text (already sent as 💬)
     try {
-      await this.sender.updateCard(oldMessageId, { ...state, responseText: '' });
+      await this.sender.updateCard(oldMessageId, { ...state, status: 'complete', responseText: '' });
     } catch { /* best effort */ }
     // Create new card at bottom for next turn
     try {
