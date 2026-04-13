@@ -29,6 +29,10 @@ export interface StreamProcessorConfig {
 export class StreamProcessor {
   private responseText = '';
   private thinkingText = '';
+  /** Text from the just-completed turn, consumed by the bridge after sending */
+  private _completedTurnText: string | undefined;
+  /** SDK result text, stored separately so it doesn't overwrite responseText */
+  private _resultSummary: string | undefined;
   private toolCalls: ToolCall[] = [];
   private toolSummaries: string[] = [];
   private subagentTasks: Map<string, SubagentTask> = new Map();
@@ -101,15 +105,21 @@ export class StreamProcessor {
     }
 
     // Determine running status
+    // Determine running status
     const hasActiveTools = this.toolCalls.some((t) => t.status === 'running');
     const status = this._pendingQuestions.length > 0
       ? 'waiting_for_input'
       : hasActiveTools ? 'running' : this.responseText ? 'running' : 'thinking';
 
+    // Capture and clear completedTurnText so it's only emitted once
+    const turnText = this._completedTurnText;
+    this._completedTurnText = undefined;
+
     return {
       status,
       userPrompt: this.userPrompt,
       responseText: this.responseText,
+      completedTurnText: turnText,
       thinkingText: this.thinkingText || undefined,
       toolCalls: [...this.toolCalls],
       toolSummaries: this.toolSummaries.length > 0 ? [...this.toolSummaries] : undefined,
@@ -156,8 +166,10 @@ export class StreamProcessor {
       if (block.type === 'thinking' && block.thinking) {
         this.thinkingText = block.thinking;
       } else if (block.type === 'text' && block.text) {
-        // Full message text replaces accumulated stream text
-        this.responseText = block.text;
+        // Emit completed turn text for the bridge to send as a separate message.
+        // Then reset responseText so the card is clean for the next turn's streaming.
+        this._completedTurnText = block.text;
+        this.responseText = '';
       } else if (block.type === 'tool_use' && block.name) {
         this.addToolCall(block.name, block.input);
         if (block.name === 'AskUserQuestion' && block.id && block.input) {
@@ -359,15 +371,20 @@ export class StreamProcessor {
       tool.status = 'done';
     }
 
-    const resultText = message.result || this.responseText;
+    const resultText = message.result || '';
     const isError = message.subtype !== 'success';
     // SDK sometimes wraps API errors as "success" with the error text as result
     const isApiError = !isError && isApiErrorResult(resultText);
 
+    // Store result separately — it will be sent as its own message with stats.
+    // Don't overwrite responseText (which is empty after per-turn emission).
+    this._resultSummary = resultText || undefined;
+
     return {
       status: (isError || isApiError) ? 'error' : 'complete',
       userPrompt: this.userPrompt,
-      responseText: isApiError ? '' : resultText,
+      responseText: '',
+      resultSummary: isApiError ? undefined : this._resultSummary,
       thinkingText: this.thinkingText || undefined,
       toolCalls: [...this.toolCalls],
       toolSummaries: this.toolSummaries.length > 0 ? [...this.toolSummaries] : undefined,

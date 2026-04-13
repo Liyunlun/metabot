@@ -55,6 +55,10 @@ export interface CardState {
   totalTokens?: number;
   /** Context window size of the primary model */
   contextWindow?: number;
+  /** Text from a just-completed assistant turn, ready to be sent as a separate message */
+  completedTurnText?: string;
+  /** SDK result text, sent as a separate message with stats at completion */
+  resultSummary?: string;
 }
 
 export interface IncomingMessage {
