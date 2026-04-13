@@ -948,10 +948,9 @@ export class MessageBridge {
         await rateLimiter.cancelAndWait();
       }
 
-      // Flush remaining turn buffer before final card
+      // Flush remaining turn buffer before final card (no recreate — final card updates in place)
       if (turnBuffer && chatId) {
         if (await this.sendTurnText(chatId, turnBuffer)) {
-          messageId = await this.recreateCard(chatId, messageId, lastState);
           turnBuffer = '';
         }
       }
@@ -1029,7 +1028,6 @@ export class MessageBridge {
           await rateLimiter.cancelAndWait();
           if (turnBuffer && chatId) {
             if (await this.sendTurnText(chatId, turnBuffer)) {
-              messageId = await this.recreateCard(chatId, messageId, lastState);
               turnBuffer = '';
             }
           }
@@ -1085,7 +1083,6 @@ export class MessageBridge {
       await rateLimiter.cancelAndWait();
       if (turnBuffer && chatId) {
         if (await this.sendTurnText(chatId, turnBuffer)) {
-          messageId = await this.recreateCard(chatId, messageId, lastState);
           turnBuffer = '';
         }
       }
@@ -1435,7 +1432,6 @@ export class MessageBridge {
 
       if (turnBuffer && chatId && messageId) {
         if (await this.sendTurnText(chatId, turnBuffer)) {
-          messageId = await this.recreateCard(chatId, messageId, lastState);
           turnBuffer = '';
         }
       }
@@ -1527,7 +1523,6 @@ export class MessageBridge {
 
           if (turnBuffer && chatId && messageId) {
             if (await this.sendTurnText(chatId, turnBuffer)) {
-              messageId = await this.recreateCard(chatId, messageId, lastState);
               turnBuffer = '';
             }
           }
@@ -1568,7 +1563,6 @@ export class MessageBridge {
         await rateLimiter.cancelAndWait();
         if (turnBuffer && chatId && messageId) {
           if (await this.sendTurnText(chatId, turnBuffer)) {
-            messageId = await this.recreateCard(chatId, messageId, lastState);
             turnBuffer = '';
           }
         }
