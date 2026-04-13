@@ -652,6 +652,7 @@ export class MessageBridge {
     let messageId: string = initialCardId;
     let turnBuffer = '';
     let turnCount = 0;
+    let needsRecreate = false;
 
     const apiContext = { botName: this.config.name, chatId };
 
@@ -740,7 +741,7 @@ export class MessageBridge {
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
                 if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                  messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+                  needsRecreate = true;
                   turnBuffer = '';
                 }
               }
@@ -842,6 +843,13 @@ export class MessageBridge {
               break;
             }
 
+            // Deferred recreate: move card to bottom when new content starts after turn flush
+            if (needsRecreate && state.responseText) {
+              await rateLimiter.flush();
+              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+              needsRecreate = false;
+            }
+
             // Throttled card update for non-final states
             rateLimiter.schedule(() => {
               this.sender.updateCard(messageId, state).catch(() => {});
@@ -936,7 +944,7 @@ export class MessageBridge {
             if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
               await rateLimiter.flush();
               if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+                needsRecreate = true;
                 turnBuffer = '';
               }
             }
@@ -944,6 +952,11 @@ export class MessageBridge {
           const newSid = processor.getSessionId();
           if (newSid) this.sessionManager.setSessionId(chatId, newSid);
           if (state.status === 'complete' || state.status === 'error') break;
+          if (needsRecreate && state.responseText) {
+            await rateLimiter.flush();
+            messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+            needsRecreate = false;
+          }
           rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
         }
         await rateLimiter.cancelAndWait();
@@ -1016,7 +1029,7 @@ export class MessageBridge {
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
                 if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                  messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+                  needsRecreate = true;
                   turnBuffer = '';
                 }
               }
@@ -1024,6 +1037,11 @@ export class MessageBridge {
             const newSid = processor.getSessionId();
             if (newSid) this.sessionManager.setSessionId(chatId, newSid);
             if (state.status === 'complete' || state.status === 'error') break;
+            if (needsRecreate && state.responseText) {
+              await rateLimiter.flush();
+              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+              needsRecreate = false;
+            }
             rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
           }
           await rateLimiter.cancelAndWait();
@@ -1174,6 +1192,7 @@ export class MessageBridge {
     let messageId: string | undefined;
     let turnBuffer = '';
     let turnCount = 0;
+    let needsRecreate = false;
     if (sendCards) {
       messageId = await this.sender.sendCard(chatId, initialState);
     }
@@ -1263,9 +1282,7 @@ export class MessageBridge {
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
                 if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                  if (messageId) {
-                    messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
-                  }
+                  needsRecreate = true;
                   turnBuffer = '';
                 }
               }
@@ -1323,6 +1340,11 @@ export class MessageBridge {
             }
 
             if (sendCards && messageId) {
+              if (needsRecreate && state.responseText) {
+                await rateLimiter.flush();
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+                needsRecreate = false;
+              }
               rateLimiter.schedule(() => {
                 this.sender.updateCard(messageId!, state).catch(() => {});
               });
@@ -1414,9 +1436,7 @@ export class MessageBridge {
             if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
               await rateLimiter.flush();
               if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                if (messageId) {
-                  messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
-                }
+                needsRecreate = true;
                 turnBuffer = '';
               }
             }
@@ -1425,6 +1445,11 @@ export class MessageBridge {
           if (newSid) this.sessionManager.setSessionId(chatId, newSid);
           if (state.status === 'complete' || state.status === 'error') break;
           if (sendCards && messageId) {
+            if (needsRecreate && state.responseText) {
+              await rateLimiter.flush();
+              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+              needsRecreate = false;
+            }
             rateLimiter.schedule(() => { this.sender.updateCard(messageId!, state); });
           }
           options.onUpdate?.(state, effectiveMessageId, false);
@@ -1506,9 +1531,7 @@ export class MessageBridge {
               if (turnBuffer.length >= TURN_MERGE_THRESHOLD) {
                 await rateLimiter.flush();
                 if (await this.sendTurnText(chatId, turnBuffer, `💬 Turn ${++turnCount}`)) {
-                  if (messageId) {
-                    messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
-                  }
+                  needsRecreate = true;
                   turnBuffer = '';
                 }
               }
@@ -1517,6 +1540,11 @@ export class MessageBridge {
             if (newSid) this.sessionManager.setSessionId(chatId, newSid);
             if (state.status === 'complete' || state.status === 'error') break;
             if (sendCards && messageId) {
+              if (needsRecreate && state.responseText) {
+                await rateLimiter.flush();
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`);
+                needsRecreate = false;
+              }
               rateLimiter.schedule(() => { this.sender.updateCard(messageId!, state); });
             }
             options.onUpdate?.(state, effectiveMessageId, false);
@@ -1607,8 +1635,10 @@ export class MessageBridge {
    * sends a plain text fallback so the user at least sees the result.
    */
   private async sendFinalCard(messageId: string, state: CardState, chatId?: string, unsentText?: string): Promise<void> {
-    // If there's unsent turn text (💬 failed), fall back to showing it in the card
-    const cardState = { ...state, responseText: unsentText || '', cardTitle: '📊 Result' };
+    // If there's unsent turn text (💬 failed), fall back to showing it in the card.
+    // If no content at all, show a pointer to the 💬 messages above.
+    const displayText = unsentText || state.responseText || '_See 💬 messages above for full response_';
+    const cardState = { ...state, responseText: displayText, cardTitle: '📊 Result' };
 
     let updateSucceeded = false;
     for (let attempt = 0; attempt < FINAL_CARD_RETRIES; attempt++) {
