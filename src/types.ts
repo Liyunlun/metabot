@@ -44,7 +44,7 @@ export interface CardState {
   errorMessage?: string;
   retryInfo?: string;
   pendingQuestion?: PendingQuestion;
-  /** Primary model used (e.g. "claude-opus-4-6") */
+  /** Primary model used (e.g. "claude-opus-4-7") */
   model?: string;
   thinking?: string;
   effort?: string;
