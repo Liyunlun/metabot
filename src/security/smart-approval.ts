@@ -173,7 +173,13 @@ export function buildClassifierEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
-    if (SECRET_ENV_DENYLIST.some((re) => re.test(k))) continue;
+    // Canonicalize to upper-case before matching. POSIX env names are
+    // case-sensitive, but in practice secrets may arrive with any casing
+    // (`openai_api_key`, `Feishu_App_Secret`, …) — especially from `.env`
+    // files or shell exports. Uppercasing first means a single denylist
+    // entry covers all casings.
+    const canon = k.toUpperCase();
+    if (SECRET_ENV_DENYLIST.some((re) => re.test(canon))) continue;
     out[k] = v;
   }
   return out;

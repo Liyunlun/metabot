@@ -329,4 +329,48 @@ describe('buildClassifierEnv — secret scrub', () => {
     expect(env.HOME).toBeDefined();
     expect(env.PATH).toBeDefined();
   });
+
+  // Codex round-4 finding: SECRET_ENV_DENYLIST was case-sensitive, so
+  // lowercase / mixed-case secret env names (.env exports from some tools)
+  // slipped through. buildClassifierEnv now canonicalizes to upper-case
+  // before matching.
+  it('SECURITY: strips lowercase secret names (`openai_api_key`)', () => {
+    process.env.openai_api_key = 'sk-lowercase-leak';
+    try {
+      const env = buildClassifierEnv();
+      expect(env.openai_api_key).toBeUndefined();
+    } finally {
+      delete process.env.openai_api_key;
+    }
+  });
+
+  it('SECURITY: strips mixed-case Feishu secrets (`Feishu_App_Secret`)', () => {
+    process.env.Feishu_App_Secret = 'mixed-case-leak';
+    try {
+      const env = buildClassifierEnv();
+      expect(env.Feishu_App_Secret).toBeUndefined();
+    } finally {
+      delete process.env.Feishu_App_Secret;
+    }
+  });
+
+  it('SECURITY: strips lowercase anthropic_api_key', () => {
+    process.env.anthropic_api_key = 'sk-ant-lowercase';
+    try {
+      const env = buildClassifierEnv();
+      expect(env.anthropic_api_key).toBeUndefined();
+    } finally {
+      delete process.env.anthropic_api_key;
+    }
+  });
+
+  it('SECURITY: strips mixed-case _TOKEN suffix (`GitHub_Token`)', () => {
+    process.env.GitHub_Token = 'ghp_mixedcase';
+    try {
+      const env = buildClassifierEnv();
+      expect(env.GitHub_Token).toBeUndefined();
+    } finally {
+      delete process.env.GitHub_Token;
+    }
+  });
 });
