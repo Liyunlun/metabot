@@ -328,6 +328,19 @@ export function buildCard(state: CardState): string {
     });
   }
 
+  // Answered question history — shown above the active pending question so
+  // users can see what they already replied. Persists on the live card until
+  // the turn is frozen (at which point it's snapshotted into the frozen card).
+  if (state.answeredQuestions && state.answeredQuestions.length > 0) {
+    elements.push({ tag: 'hr' });
+    for (const qa of state.answeredQuestions) {
+      elements.push({
+        tag: 'markdown',
+        content: `**[${qa.header}] ${qa.question}**\n> **→** ${qa.answer}`,
+      });
+    }
+  }
+
   // Pending question section
   if (state.pendingQuestion) {
     elements.push({ tag: 'hr' });

@@ -3,7 +3,7 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import type { BotConfigBase } from '../config.js';
 import type { Logger } from '../utils/logger.js';
-import type { IncomingMessage, CardState, PendingQuestion } from '../types.js';
+import type { IncomingMessage, CardState, PendingQuestion, AnsweredQuestion } from '../types.js';
 import type { IMessageSender } from './message-sender.interface.js';
 import type { DocSync } from '../sync/doc-sync.js';
 import { ClaudeExecutor, type ExecutionHandle } from '../claude/executor.js';
@@ -73,6 +73,8 @@ interface RunningTask {
   currentQuestionIndex: number;
   /** Accumulated answers keyed by question header (for multi-question calls) */
   collectedAnswers: Record<string, string>;
+  /** Q&A history preserved on the live card so the user can see previous replies after Claude resumes streaming. Flushed into the frozen Turn card on recreate. */
+  answeredQuestions: AnsweredQuestion[];
   cardMessageId: string;
   questionTimeoutId?: ReturnType<typeof setTimeout>;
   processor: StreamProcessor;
@@ -428,6 +430,15 @@ export class MessageBridge {
     // Store answer for this question
     task.collectedAnswers[currentQuestion.header] = answerText;
 
+    // Preserve the Q&A on the live card so the user can see what they replied
+    // after Claude resumes streaming (the stream-processor state does not
+    // remember answers, so without this the block disappears on the next update).
+    task.answeredQuestions.push({
+      header: currentQuestion.header,
+      question: currentQuestion.question,
+      answer: answerText,
+    });
+
     this.logger.info(
       { chatId, answer: answerText, questionIndex: task.currentQuestionIndex, total: pending.questions.length, toolUseId: pending.toolUseId },
       'User answered question',
@@ -451,14 +462,11 @@ export class MessageBridge {
         toolUseId: pending.toolUseId,
         questions: [nextQ],
       };
-      const progress = `(${task.currentQuestionIndex + 1}/${pending.questions.length})`;
       await this.sender.updateCard(task.cardMessageId, {
         ...currentState,
         status: 'waiting_for_input',
-        responseText: currentState.responseText
-          ? currentState.responseText + `\n\n> **Reply ${progress}:** ${answerText}`
-          : `> **Reply:** ${answerText}`,
         pendingQuestion: displayQuestion,
+        answeredQuestions: [...task.answeredQuestions],
       });
       return;
     }
@@ -493,7 +501,6 @@ export class MessageBridge {
         toolUseId: nextPending.toolUseId,
         questions: [nextPending.questions[0]],
       };
-      const progress = nextPending.questions.length > 1 ? ` (1/${nextPending.questions.length})` : '';
       task.questionTimeoutId = setTimeout(() => {
         this.autoAnswerRemainingQuestions(task);
       }, QUESTION_TIMEOUT_MS);
@@ -501,27 +508,20 @@ export class MessageBridge {
       await this.sender.updateCard(task.cardMessageId, {
         ...currentState,
         status: 'waiting_for_input',
-        responseText: currentState.responseText
-          ? currentState.responseText + `\n\n> **Reply:** ${answerText}\n\n_Next question${progress}..._`
-          : `> **Reply:** ${answerText}\n\n_Next question${progress}..._`,
         pendingQuestion: displayQuestion,
+        answeredQuestions: [...task.answeredQuestions],
       });
       return;
     }
 
-    // No more questions — resume normal execution.
-    // Use the `collectedAnswers` snapshot captured above, NOT task.collectedAnswers
-    // (which was reset to {} just before resolveQuestion for the next question cycle).
-    const answerSummary = Object.values(collectedAnswers).length > 0
-      ? Object.values(collectedAnswers).join(', ')
-      : answerText;
+    // No more questions — resume normal execution. Keep the Q&A history
+    // visible (answeredQuestions); the stream loop will re-inject it on
+    // subsequent processor updates.
     const currentState = task.processor.getCurrentState();
     await this.sender.updateCard(task.cardMessageId, {
       ...currentState,
       status: 'running',
-      responseText: currentState.responseText
-        ? currentState.responseText + `\n\n> **Reply:** ${answerSummary}\n\n_Continuing..._`
-        : `> **Reply:** ${answerSummary}\n\n_Continuing..._`,
+      answeredQuestions: [...task.answeredQuestions],
     });
   }
 
@@ -738,6 +738,7 @@ export class MessageBridge {
       pendingQuestion: null,
       currentQuestionIndex: 0,
       collectedAnswers: {},
+      answeredQuestions: [],
       cardMessageId: messageId,
       processor,
       rateLimiter,
@@ -798,6 +799,7 @@ export class MessageBridge {
             resetIdleTimer();
 
             const state = processor.processMessage(message);
+            state.answeredQuestions = runningTask.answeredQuestions;
             lastState = state;
 
             // Per-turn message: buffer short turns, send when threshold is met
@@ -914,12 +916,15 @@ export class MessageBridge {
               await rateLimiter.flush();
               rateLimiter.pause();
               try {
-                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
               } finally {
                 rateLimiter.resume();
               }
               needsRecreate = false;
               turnBuffer = '';
+              // Q&A from this turn is now frozen into the old card; start fresh
+              // for the next turn so the live card doesn't double up.
+              runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
             }
 
             // Throttled card update for non-final states. Return the promise
@@ -1011,6 +1016,7 @@ export class MessageBridge {
           if (abortController.signal.aborted) break;
           resetIdleTimer();
           const state = processor.processMessage(message);
+          state.answeredQuestions = runningTask.answeredQuestions;
           lastState = state;
           if (state.completedTurnText && chatId) {
             turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
@@ -1027,12 +1033,15 @@ export class MessageBridge {
             await rateLimiter.flush();
             rateLimiter.pause();
             try {
-              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
             } finally {
               rateLimiter.resume();
             }
             needsRecreate = false;
             turnBuffer = '';
+            // Q&A from this turn is now frozen into the old card; start fresh
+            // for the next turn so the live card doesn't double up.
+            runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
           }
           rateLimiter.schedule(() => this.sender.updateCard(messageId, state).catch(() => false));
         }
@@ -1096,6 +1105,7 @@ export class MessageBridge {
             if (abortController.signal.aborted) break;
             resetIdleTimer();
             const state = processor.processMessage(message);
+            state.answeredQuestions = runningTask.answeredQuestions;
             lastState = state;
             if (state.completedTurnText && chatId) {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
@@ -1112,12 +1122,13 @@ export class MessageBridge {
               await rateLimiter.flush();
               rateLimiter.pause();
               try {
-                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
               } finally {
                 rateLimiter.resume();
               }
               needsRecreate = false;
               turnBuffer = '';
+              runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
             }
             rateLimiter.schedule(() => this.sender.updateCard(messageId, state).catch(() => false));
           }
@@ -1171,6 +1182,7 @@ export class MessageBridge {
         responseText: lastState.responseText,
         toolCalls: lastState.toolCalls,
         errorMessage: err.message || 'Unknown error',
+        answeredQuestions: runningTask.answeredQuestions.length > 0 ? [...runningTask.answeredQuestions] : undefined,
       };
       await rateLimiter.cancelAndWait();
       if (turnBuffer && !needsRecreate) ++turnCount;
@@ -1292,6 +1304,7 @@ export class MessageBridge {
       pendingQuestion: null,
       currentQuestionIndex: 0,
       collectedAnswers: {},
+      answeredQuestions: [],
       cardMessageId: messageId || '',
       processor,
       rateLimiter,
@@ -1343,6 +1356,7 @@ export class MessageBridge {
             resetIdleTimer();
 
             const state = processor.processMessage(message);
+            state.answeredQuestions = runningTask.answeredQuestions;
             lastState = state;
 
             // Per-turn message: buffer short turns, send when threshold is met
@@ -1408,9 +1422,10 @@ export class MessageBridge {
             if (sendCards && messageId) {
               if (needsRecreate && state.responseText) {
                 await rateLimiter.flush();
-                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
                 needsRecreate = false;
                 turnBuffer = '';
+                runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
               }
               rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
             }
@@ -1495,6 +1510,7 @@ export class MessageBridge {
           if (abortController.signal.aborted) break;
           resetIdleTimer();
           const state = processor.processMessage(message);
+          state.answeredQuestions = runningTask.answeredQuestions;
           lastState = state;
           if (state.completedTurnText && chatId) {
             turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
@@ -1510,9 +1526,10 @@ export class MessageBridge {
           if (sendCards && messageId) {
             if (needsRecreate && state.responseText) {
               await rateLimiter.flush();
-              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+              messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
               needsRecreate = false;
               turnBuffer = '';
+              runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
             }
             rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
           }
@@ -1585,6 +1602,7 @@ export class MessageBridge {
             if (abortController.signal.aborted) break;
             resetIdleTimer();
             const state = processor.processMessage(message);
+            state.answeredQuestions = runningTask.answeredQuestions;
             lastState = state;
             if (state.completedTurnText && chatId) {
               turnBuffer += (turnBuffer ? '\n\n---\n\n' : '') + state.completedTurnText;
@@ -1600,9 +1618,10 @@ export class MessageBridge {
             if (sendCards && messageId) {
               if (needsRecreate && state.responseText) {
                 await rateLimiter.flush();
-                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer);
+                messageId = await this.recreateCard(chatId, messageId, state, `Turn ${turnCount}`, turnBuffer, runningTask.answeredQuestions);
                 needsRecreate = false;
                 turnBuffer = '';
+                runningTask.answeredQuestions.length = 0; // in-place clear so state.answeredQuestions (same reference) does not leak prior-turn Q&A into the new live card
               }
               rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
             }
@@ -1644,6 +1663,7 @@ export class MessageBridge {
           responseText: lastState.responseText,
           toolCalls: lastState.toolCalls,
           errorMessage: err.message || 'Unknown error',
+          answeredQuestions: runningTask.answeredQuestions.length > 0 ? [...runningTask.answeredQuestions] : undefined,
         };
         await rateLimiter.cancelAndWait();
         if (turnBuffer && !needsRecreate) ++turnCount;
@@ -1656,6 +1676,7 @@ export class MessageBridge {
         responseText: lastState.responseText,
         toolCalls: lastState.toolCalls,
         errorMessage: err.message || 'Unknown error',
+        answeredQuestions: runningTask.answeredQuestions.length > 0 ? [...runningTask.answeredQuestions] : undefined,
       };
       options.onUpdate?.(catchErrorState, effectiveMessageId, true);
 
@@ -1814,9 +1835,17 @@ export class MessageBridge {
    * Freeze old card and create a new one at the bottom so the card stays below 💬 messages.
    * Returns the new messageId, or the old one if card creation failed.
    */
-  private async recreateCard(chatId: string, oldMessageId: string, state: CardState, turnLabel?: string, turnText?: string): Promise<string> {
+  private async recreateCard(chatId: string, oldMessageId: string, state: CardState, turnLabel?: string, turnText?: string, answeredQuestions?: AnsweredQuestion[]): Promise<string> {
     // Freeze old card with the completed turn's content so the card itself shows the response.
-    const freezeState = { ...state, status: 'complete' as const, responseText: turnText || '', cardTitle: turnLabel };
+    // Snapshot the Q&A into the frozen card so the question history is permanently
+    // visible on that turn (the live card starts a fresh list after recreate).
+    const freezeState: CardState = {
+      ...state,
+      status: 'complete' as const,
+      responseText: turnText || '',
+      cardTitle: turnLabel,
+      answeredQuestions: answeredQuestions && answeredQuestions.length > 0 ? [...answeredQuestions] : undefined,
+    };
     let frozen = false;
     // updateCard's contract is no-throw + boolean return on transport failure,
     // but we also defend against unexpected throws (e.g. mocks in tests).
@@ -1982,6 +2011,7 @@ export class MessageBridge {
           ...currentState,
           status: 'error',
           errorMessage: task.abortReason || 'Service restarted',
+          answeredQuestions: task.answeredQuestions.length > 0 ? [...task.answeredQuestions] : undefined,
         };
         updatePromises.push(
           this.sender.updateCard(task.cardMessageId, finalState).catch(() => {}),
