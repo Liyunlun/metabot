@@ -25,6 +25,8 @@ export interface AnsweredQuestion {
   header: string;
   question: string;
   answer: string;
+  /** Options that were available when the question was asked, so the Q&A history retains the full choice context. */
+  options?: Array<{ label: string; description: string }>;
 }
 
 export interface SubagentTask {

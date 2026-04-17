@@ -437,6 +437,7 @@ export class MessageBridge {
       header: currentQuestion.header,
       question: currentQuestion.question,
       answer: answerText,
+      options: currentQuestion.options.map((opt) => ({ label: opt.label, description: opt.description })),
     });
 
     this.logger.info(

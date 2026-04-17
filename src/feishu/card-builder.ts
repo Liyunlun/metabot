@@ -334,10 +334,23 @@ export function buildCard(state: CardState): string {
   if (state.answeredQuestions && state.answeredQuestions.length > 0) {
     elements.push({ tag: 'hr' });
     for (const qa of state.answeredQuestions) {
-      elements.push({
-        tag: 'markdown',
-        content: `**[${qa.header}] ${qa.question}**\n> **→** ${qa.answer}`,
-      });
+      const lines: string[] = [`**[${qa.header}] ${qa.question}**`];
+      if (qa.options && qa.options.length > 0) {
+        for (let i = 0; i < qa.options.length; i++) {
+          const opt = qa.options[i];
+          const selected = opt.label === qa.answer;
+          const prefix = selected ? '**✅ ' : '';
+          const suffix = selected ? '**' : '';
+          lines.push(`${prefix}${i + 1}. ${opt.label} — _${opt.description}_${suffix}`);
+        }
+        // Custom free-text answer that didn't match any option label
+        if (!qa.options.some((o) => o.label === qa.answer)) {
+          lines.push(`**✅ 自定义：** ${qa.answer}`);
+        }
+      } else {
+        lines.push(`> **→** ${qa.answer}`);
+      }
+      elements.push({ tag: 'markdown', content: lines.join('\n') });
     }
   }
 
