@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import type * as lark from '@larksuiteoapi/node-sdk';
 import type { Logger } from '../utils/logger.js';
 
@@ -10,10 +11,11 @@ export class MessageSender {
 
   /**
    * Retry a Feishu API call on transient gateway errors (502, 503).
-   * Retries up to 2 times with 1s / 2s delay. Only use for idempotent
-   * operations (e.g. PATCH updates) — do NOT use for message.create,
-   * which would risk duplicate user-visible messages if the first
-   * request reached Feishu but the response was lost.
+   * Retries up to 2 times with 1s / 2s delay. Callers are responsible
+   * for ensuring the wrapped call is idempotent — either the operation
+   * is inherently idempotent (e.g. PATCH on a fixed message_id) or the
+   * caller passes a stable `uuid` to `message.create` (Feishu dedupes
+   * identical `uuid` within ~1h).
    */
   private async withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
     const maxRetries = 2;
@@ -34,17 +36,22 @@ export class MessageSender {
   }
 
   async sendCard(chatId: string, cardContent: string): Promise<string | undefined> {
-    // Not retried: message.create is not idempotent — a retry after a lost
-    // 502 response could create duplicate cards in the chat.
+    // Safe to retry: we pass a stable `uuid` per logical send, and Feishu
+    // dedupes identical `uuid` for ~1h — so a lost 502 response won't
+    // produce a duplicate card on retry.
+    const uuid = randomUUID();
     try {
-      const resp = await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          content: cardContent,
-          msg_type: 'interactive',
-        },
-      });
+      const resp = await this.withRetry('sendCard', () =>
+        this.client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            content: cardContent,
+            msg_type: 'interactive',
+            uuid,
+          },
+        }),
+      );
 
       const messageId = resp?.data?.message_id;
       if (!messageId) {
@@ -209,16 +216,20 @@ export class MessageSender {
   }
 
   async sendText(chatId: string, text: string): Promise<void> {
-    // Not retried: message.create is not idempotent — see sendCard().
+    // Safe to retry: stable `uuid` dedupes on Feishu side (see sendCard).
+    const uuid = randomUUID();
     try {
-      await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          content: JSON.stringify({ text }),
-          msg_type: 'text',
-        },
-      });
+      await this.withRetry('sendText', () =>
+        this.client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            content: JSON.stringify({ text }),
+            msg_type: 'text',
+            uuid,
+          },
+        }),
+      );
     } catch (err) {
       this.logger.error({ err, chatId }, 'Failed to send text');
     }
