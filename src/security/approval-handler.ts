@@ -233,6 +233,19 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
 
     // Step 5 — Phase 3 user card. If the card path isn't available on this
     // platform, fail closed.
+    //
+    // Scope (Codex R3 P1 — accepted as design):
+    //   This branch fires for any sender without raw-card support (Telegram,
+    //   raw API, CLI mode). Today the only sender with raw cards is Feishu,
+    //   so platforms without it fail closed here for every flagged bash
+    //   command that the classifier didn't auto-approve. Known consequence:
+    //   Telegram can't run flagged commands (including hard-blacklisted ones
+    //   that must reach a human) until a Telegram-compatible prompt surface
+    //   lands.
+    //   Decision: Feishu-only for this milestone. When Telegram support is
+    //   added, give its sender a raw-card equivalent (inline keyboard with
+    //   approve/deny buttons) and register it as a `CardSender` with the
+    //   approval bridge — no change needed here.
     if (!cardPromptAvailable) {
       emitTerminal('no_card_denied', 'deny', command, {
         patternKey,

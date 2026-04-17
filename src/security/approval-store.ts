@@ -402,6 +402,22 @@ export class ApprovalStore {
    * Persist the side-effects of a choice into session/permanent state.
    * `'once'` and `'deny'` have no persisted side-effects — they bind only
    * this single request.
+   *
+   * Divergence from Hermes (intentional simplification — Codex review R3,
+   * option B):
+   *   Hermes's `'always'` semantics add the patternKey to BOTH the session
+   *   allowlist AND the permanent allowlist, so a subsequent `/reset` still
+   *   keeps the permanent entry but also leaves the session allowlist warm.
+   *   MetaBot only writes to permanent, because:
+   *     1. `isPreApproved` already checks session OR permanent — so a
+   *        permanent approval IS effective in the current session.
+   *     2. The only observable difference is the output of `/approvals`,
+   *        where Hermes would show the same patternKey under both buckets.
+   *     3. Keeping a single source of truth avoids a three-way sync problem
+   *        with persistence: Hermes's dual-write means a `revokePermanent`
+   *        leaves the stale session copy behind.
+   *   If a future port needs strict Hermes parity, adding
+   *   `this.approveForSession(...)` here is a one-liner.
    */
   private applyChoice(entry: PendingEntry, choice: ApprovalChoice): void {
     if (choice === 'session') {
