@@ -334,21 +334,46 @@ export function buildCard(state: CardState): string {
     // Only display the first question — the bridge only collects one answer
     // at a time. If Claude batches multiple questions, they will be asked
     // sequentially as Claude re-asks unanswered ones.
-    const questionLines: string[] = [];
     const q = state.pendingQuestion.questions[0];
     if (q) {
-      questionLines.push(`**[${q.header}] ${q.question}**`);
-      questionLines.push('');
-      q.options.forEach((opt, i) => {
-        questionLines.push(`**${i + 1}.** ${opt.label} — _${opt.description}_`);
+      // Question header + text
+      elements.push({
+        tag: 'markdown',
+        content: `**[${q.header}] ${q.question}**`,
       });
-      questionLines.push(`**${q.options.length + 1}.** Other（输入自定义回答）`);
-      questionLines.push('');
+
+      // Option descriptions (shown above buttons so users see what each means)
+      const descLines = q.options
+        .map((opt, i) => `**${i + 1}.** ${opt.label} — _${opt.description}_`)
+        .join('\n');
+      if (descLines) {
+        elements.push({ tag: 'markdown', content: descLines });
+      }
+
+      // Interactive buttons — one per option, value carries toolUseId + index
+      // so the bridge can route the click back to resolveQuestion. Layout
+      // 'flow' wraps buttons naturally; Feishu's own max per row is handled
+      // client-side. Buttons stay interactive only while pendingQuestion is
+      // set — once the bridge resolves the question and re-renders the card
+      // without pendingQuestion, the buttons are gone.
+      elements.push({
+        tag: 'action',
+        layout: 'flow',
+        actions: q.options.map((opt, i) => ({
+          tag: 'button',
+          text: { tag: 'plain_text', content: `${i + 1}. ${opt.label}` },
+          type: 'primary',
+          value: {
+            kind: 'askuser_answer',
+            toolUseId: state.pendingQuestion!.toolUseId,
+            optionIndex: i,
+          },
+        })),
+      });
     }
-    questionLines.push('_回复数字选择，或直接输入自定义答案_');
     elements.push({
       tag: 'markdown',
-      content: questionLines.join('\n'),
+      content: '_点击按钮选择，或直接输入自定义答案_',
     });
   }
 
@@ -424,7 +449,13 @@ export function buildCard(state: CardState): string {
   }
 
   const card = {
-    config: { wide_screen_mode: true },
+    // update_multi: true is required for interactive cards whose buttons
+    // need to remain valid across multiple card updates (e.g. answering Q1
+    // then re-rendering for Q2). Without it, Feishu returns 108002
+    // ("应用对应的卡片不存在") on the second button click because the
+    // post-update card is treated as a distinct card without the original
+    // button callbacks attached.
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: config.color,
       title: {
