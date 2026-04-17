@@ -449,7 +449,13 @@ export function buildCard(state: CardState): string {
   }
 
   const card = {
-    config: { wide_screen_mode: true },
+    // update_multi: true is required for interactive cards whose buttons
+    // need to remain valid across multiple card updates (e.g. answering Q1
+    // then re-rendering for Q2). Without it, Feishu returns 108002
+    // ("应用对应的卡片不存在") on the second button click because the
+    // post-update card is treated as a distinct card without the original
+    // button callbacks attached.
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: config.color,
       title: {
