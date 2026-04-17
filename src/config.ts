@@ -26,6 +26,26 @@ export interface BotConfigBase {
     outputsBaseDir: string;
     downloadsDir: string;
   };
+  /**
+   * Phase 4 approval tuning. Absent object ⇒ defaults
+   * (`smartApproval: { enabled: true, timeoutMs: 5000 }`). Operators can
+   * override per-bot in `bots.json` under `"approval": {...}`.
+   */
+  approval?: {
+    smartApproval?: {
+      /** Enable LLM pre-filter. Default `true`. When `false` every flagged command falls through to the Phase 3 card. */
+      enabled?: boolean;
+      /** Wall-clock budget for a single classify() call in ms. Default `5000`. */
+      timeoutMs?: number;
+    };
+  };
+}
+
+export interface ApprovalConfigJsonEntry {
+  smartApproval?: {
+    enabled?: boolean;
+    timeoutMs?: number;
+  };
 }
 
 /** Feishu bot config (extends base with Feishu credentials). */
@@ -124,6 +144,7 @@ export interface FeishuBotJsonEntry {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  approval?: ApprovalConfigJsonEntry;
 }
 
 function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
@@ -140,6 +161,7 @@ function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
       appSecret: entry.feishuAppSecret,
     },
     claude: buildClaudeConfig(entry),
+    ...(entry.approval ? { approval: entry.approval } : {}),
   };
 }
 
@@ -163,6 +185,7 @@ export interface TelegramBotJsonEntry {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  approval?: ApprovalConfigJsonEntry;
 }
 
 function telegramBotFromJson(entry: TelegramBotJsonEntry): TelegramBotConfig {
@@ -178,6 +201,7 @@ function telegramBotFromJson(entry: TelegramBotJsonEntry): TelegramBotConfig {
       botToken: entry.telegramBotToken,
     },
     claude: buildClaudeConfig(entry),
+    ...(entry.approval ? { approval: entry.approval } : {}),
   };
 }
 
@@ -197,6 +221,7 @@ export interface WebBotJsonEntry {
   model?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  approval?: ApprovalConfigJsonEntry;
 }
 
 export function webBotFromJson(entry: WebBotJsonEntry): BotConfigBase {
@@ -209,6 +234,7 @@ export function webBotFromJson(entry: WebBotJsonEntry): BotConfigBase {
     ...(entry.budgetLimitDaily != null ? { budgetLimitDaily: entry.budgetLimitDaily } : {}),
     ...(entry.ttsVoice ? { ttsVoice: entry.ttsVoice } : {}),
     claude: buildClaudeConfig(entry),
+    ...(entry.approval ? { approval: entry.approval } : {}),
   };
 }
 
@@ -226,6 +252,7 @@ export interface WechatBotJsonEntry {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  approval?: ApprovalConfigJsonEntry;
 }
 
 function wechatBotFromJson(entry: WechatBotJsonEntry): WechatBotConfig {
@@ -237,6 +264,7 @@ function wechatBotFromJson(entry: WechatBotJsonEntry): WechatBotConfig {
       botToken: entry.wechatBotToken,
     },
     claude: buildClaudeConfig(entry),
+    ...(entry.approval ? { approval: entry.approval } : {}),
   };
 }
 

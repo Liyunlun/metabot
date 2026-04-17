@@ -21,7 +21,8 @@ import { splitResponseText } from '../feishu/card-builder.js';
 import type { SessionRegistry } from '../session/session-registry.js';
 import { approvalStore } from '../security/approval-store.js';
 import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
-import { detectDangerousCommand } from '../security/dangerous-patterns.js';
+import { SmartApprovalClassifier } from '../security/smart-approval.js';
+import { createApprovalHandler } from '../security/approval-handler.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
@@ -146,6 +147,7 @@ export class MessageBridge {
   private messageQueues = new Map<string, IncomingMessage[]>(); // per-chatId message queue
   private pendingBatches = new Map<string, PendingBatch>(); // media debounce batches
   private approvalBridge?: ApprovalBridge; // dangerous-command approval UI (Feishu only)
+  private smartApproval: SmartApprovalClassifier; // Phase 4 LLM pre-filter
   /** Callback for activity lifecycle events (task started/completed/failed). */
   onActivityEvent?: (event: ActivityEventData) => void;
 
@@ -171,6 +173,19 @@ export class MessageBridge {
     );
 
     this.outputHandler = new OutputHandler(logger, sender, this.outputsManager);
+
+    // Phase 4 LLM pre-filter. Enabled by default; operators opt out via
+    // `approval.smartApproval.enabled = false` in bots.json. Model tracks
+    // `config.claude.model` at call time so /model switches propagate.
+    const smartCfg = config.approval?.smartApproval;
+    this.smartApproval = new SmartApprovalClassifier(
+      {
+        enabled: smartCfg?.enabled ?? true,
+        timeoutMs: smartCfg?.timeoutMs ?? 5000,
+      },
+      () => this.config.claude.model,
+      logger,
+    );
 
     // Dangerous-command approval wiring — only enabled on platforms that
     // implement sendRawCard / updateRawCard (currently Feishu). Telegram and
@@ -746,22 +761,20 @@ export class MessageBridge {
     // the system behaves as before Issue #14.
     const detachApprovals = this.approvalBridge?.attachToSession(chatId);
 
-    // Per-task Bash approval handler: detect dangerous patterns, consult the
-    // pre-approval cache, and prompt the user via the approval card if neither
-    // applies. YOLO mode short-circuits inside approvalStore.promptApproval.
-    const approvalHandler = this.approvalBridge
-      ? async (command: string): Promise<'allow' | 'deny'> => {
-          const detection = detectDangerousCommand(command);
-          if (!detection.matched) return 'allow';
-          if (approvalStore.isPreApproved(chatId, detection.patternKey)) return 'allow';
-          const choice = await approvalStore.promptApproval(chatId, {
-            command,
-            description: detection.description,
-            patternKey: detection.patternKey,
-          });
-          return choice === 'deny' ? 'deny' : 'allow';
-        }
-      : undefined;
+    // Per-task Bash approval handler — full Phase 4 decision tree. Detects
+    // flagged commands, consults the pre-approval cache, runs the hard-
+    // blacklist + smart-approval pre-filter, and prompts the user via the
+    // approval card only when the classifier escalates (or is unavailable).
+    const approvalHandler = createApprovalHandler({
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
 
     // Start multi-turn execution
     let executionHandle = this.executor.startExecution({
@@ -1340,19 +1353,16 @@ export class MessageBridge {
     // Same per-task approval wiring as the interactive path — see executeQuery
     // for the rationale. Safe no-op when approvalBridge is undefined.
     const detachApprovals = this.approvalBridge?.attachToSession(chatId);
-    const approvalHandler = this.approvalBridge
-      ? async (command: string): Promise<'allow' | 'deny'> => {
-          const detection = detectDangerousCommand(command);
-          if (!detection.matched) return 'allow';
-          if (approvalStore.isPreApproved(chatId, detection.patternKey)) return 'allow';
-          const choice = await approvalStore.promptApproval(chatId, {
-            command,
-            description: detection.description,
-            patternKey: detection.patternKey,
-          });
-          return choice === 'deny' ? 'deny' : 'allow';
-        }
-      : undefined;
+    const approvalHandler = createApprovalHandler({
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
 
     let executionHandle = this.executor.startExecution({
       prompt,

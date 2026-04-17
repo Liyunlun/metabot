@@ -223,10 +223,19 @@ export class ApprovalStore {
    *
    * If no notify callback is registered, the Promise resolves to `'deny'`
    * immediately (fail-closed — safer than hanging forever).
+   *
+   * Pass `options.bypassAllowlist = true` to skip the internal
+   * `isPreApproved` short-circuit — needed for Phase 4's hard blacklist,
+   * which MUST always reach a human even if the session/permanent allowlist
+   * or YOLO mode would otherwise apply.
    */
-  promptApproval(sessionKey: string, request: ApprovalRequest): Promise<ApprovalChoice> {
+  promptApproval(
+    sessionKey: string,
+    request: ApprovalRequest,
+    options?: { bypassAllowlist?: boolean },
+  ): Promise<ApprovalChoice> {
     // Fast-path pre-approval (caller should check first, but double-check here).
-    if (this.isPreApproved(sessionKey, request.patternKey)) {
+    if (!options?.bypassAllowlist && this.isPreApproved(sessionKey, request.patternKey)) {
       return Promise.resolve('once');
     }
 
