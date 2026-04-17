@@ -88,6 +88,14 @@ interface PendingEntry {
   settled: boolean;
   /** Set if a timeout is armed — cleared on resolution. */
   timeoutHandle?: ReturnType<typeof setTimeout>;
+  /**
+   * Optional per-entry settlement observer. Invoked for every resolution path
+   * (user click via `resolveById`, text command via `resolveNext`, timeout,
+   * `unregisterNotify`). Consumers that need to react to out-of-band
+   * settlements (e.g. the bridge updating a stale pending card to its
+   * resolved state) register a callback via `onSettle(approvalId, cb)`.
+   */
+  onSettle?: (choice: ApprovalChoice) => void;
 }
 
 export class ApprovalStore {
@@ -239,6 +247,16 @@ export class ApprovalStore {
           entry.settled = true;
           if (entry.timeoutHandle) clearTimeout(entry.timeoutHandle);
           this.byId.delete(id);
+          // Fire the per-entry observer (if any) before resolving the outer
+          // Promise, so UI-layer state (e.g. the bridge's resolved card)
+          // settles in lockstep with the agent's view. Observer errors must
+          // not block the caller's Promise.
+          const observer = entry.onSettle;
+          if (observer) {
+            try { observer(choice); } catch (err) {
+              this.onError('onSettle observer threw', err);
+            }
+          }
           resolve(choice);
         },
         createdAt: Date.now(),
@@ -351,6 +369,24 @@ export class ApprovalStore {
       entry.resolve(choice);
     }
     return entries.length;
+  }
+
+  /**
+   * Register a settlement observer for a specific pending approval. The
+   * callback runs on every resolution path — button click, text command,
+   * timeout, `unregisterNotify`. Returns `true` if the entry was found and
+   * the observer attached, `false` if the id is unknown (already settled
+   * or never existed).
+   *
+   * The bridge uses this to update the pending Feishu card to a
+   * green/red resolved state whenever the underlying approval settles, so
+   * the UI never shows orange after the agent has moved on.
+   */
+  onSettle(approvalId: string, cb: (choice: ApprovalChoice) => void): boolean {
+    const entry = this.byId.get(approvalId);
+    if (!entry || entry.settled) return false;
+    entry.onSettle = cb;
+    return true;
   }
 
   /**

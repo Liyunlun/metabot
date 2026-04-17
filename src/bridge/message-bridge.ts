@@ -19,6 +19,9 @@ import { CostTracker } from '../utils/cost-tracker.js';
 import { metrics } from '../utils/metrics.js';
 import { splitResponseText } from '../feishu/card-builder.js';
 import type { SessionRegistry } from '../session/session-registry.js';
+import { approvalStore } from '../security/approval-store.js';
+import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
+import { detectDangerousCommand } from '../security/dangerous-patterns.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
@@ -142,6 +145,7 @@ export class MessageBridge {
   private runningTasks = new Map<string, RunningTask>(); // keyed by chatId
   private messageQueues = new Map<string, IncomingMessage[]>(); // per-chatId message queue
   private pendingBatches = new Map<string, PendingBatch>(); // media debounce batches
+  private approvalBridge?: ApprovalBridge; // dangerous-command approval UI (Feishu only)
   /** Callback for activity lifecycle events (task started/completed/failed). */
   onActivityEvent?: (event: ActivityEventData) => void;
 
@@ -167,6 +171,19 @@ export class MessageBridge {
     );
 
     this.outputHandler = new OutputHandler(logger, sender, this.outputsManager);
+
+    // Dangerous-command approval wiring — only enabled on platforms that
+    // implement sendRawCard / updateRawCard (currently Feishu). Telegram and
+    // other platforms silently degrade: Bash commands still run without the
+    // button-confirmation UI, same as before Issue #14.
+    if (sender.sendRawCard && sender.updateRawCard) {
+      const cardSender: CardSender = {
+        sendCard: (chatId, json) => sender.sendRawCard!(chatId, json),
+        updateCard: (messageId, json) => sender.updateRawCard!(messageId, json),
+      };
+      this.approvalBridge = new ApprovalBridge(approvalStore, cardSender, logger);
+      this.commandHandler.setApprovalBridge(this.approvalBridge);
+    }
   }
 
   /** Emit an activity event if a listener is registered. */
@@ -359,9 +376,14 @@ export class MessageBridge {
     messageId: string;
     value: Record<string, unknown>;
   }): Promise<void> {
+    // Dangerous-command approval buttons — route first so the AskUserQuestion
+    // path below doesn't need to know about this kind. handleButtonClick
+    // returns true if it handled the value.
+    if (this.approvalBridge?.handleButtonClick(evt.value, evt.userId)) {
+      return;
+    }
     if (evt.value.kind !== 'askuser_answer') {
-      // Unknown action kind — ignore silently. Future action kinds (e.g.
-      // approve/deny buttons) will add their own branches here.
+      // Unknown action kind — ignore silently.
       return;
     }
     const toolUseId = typeof evt.value.toolUseId === 'string' ? evt.value.toolUseId : undefined;
@@ -718,6 +740,29 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId };
 
+    // Attach the approval bridge for this task's lifetime. detach is called
+    // in the finally block below. When approvalBridge is undefined (platforms
+    // without raw-card support), approvalHandler falls back to 'allow' and
+    // the system behaves as before Issue #14.
+    const detachApprovals = this.approvalBridge?.attachToSession(chatId);
+
+    // Per-task Bash approval handler: detect dangerous patterns, consult the
+    // pre-approval cache, and prompt the user via the approval card if neither
+    // applies. YOLO mode short-circuits inside approvalStore.promptApproval.
+    const approvalHandler = this.approvalBridge
+      ? async (command: string): Promise<'allow' | 'deny'> => {
+          const detection = detectDangerousCommand(command);
+          if (!detection.matched) return 'allow';
+          if (approvalStore.isPreApproved(chatId, detection.patternKey)) return 'allow';
+          const choice = await approvalStore.promptApproval(chatId, {
+            command,
+            description: detection.description,
+            patternKey: detection.patternKey,
+          });
+          return choice === 'deny' ? 'deny' : 'allow';
+        }
+      : undefined;
+
     // Start multi-turn execution
     let executionHandle = this.executor.startExecution({
       prompt,
@@ -726,6 +771,7 @@ export class MessageBridge {
       abortController,
       outputsDir,
       apiContext,
+      approvalHandler,
     });
 
     const rateLimiter = new RateLimiter(1500);
@@ -1196,6 +1242,9 @@ export class MessageBridge {
         clearTimeout(runningTask.questionTimeoutId);
       }
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      // Detach the approval bridge — unregisters the notify callback and
+      // denies any still-pending approvals so the Bash hook doesn't hang.
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       // Only delete if this is still our task (guards against stopTask race condition)
       if (this.runningTasks.get(chatId) === runningTask) {
         this.runningTasks.delete(chatId);
@@ -1221,6 +1270,9 @@ export class MessageBridge {
     // Clear session before execution so each run starts with a clean context
     if (freshSession) {
       this.sessionManager.resetSession(chatId);
+      // Also clear per-chat approval state so a fresh API run doesn't inherit
+      // YOLO / session allowlist from a previous operator.
+      approvalStore.clearSession(chatId);
       this.logger.info({ chatId }, 'Fresh session: cleared previous session');
     }
 
@@ -1285,6 +1337,23 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId, groupMembers: options.groupMembers, groupId: options.groupId };
 
+    // Same per-task approval wiring as the interactive path — see executeQuery
+    // for the rationale. Safe no-op when approvalBridge is undefined.
+    const detachApprovals = this.approvalBridge?.attachToSession(chatId);
+    const approvalHandler = this.approvalBridge
+      ? async (command: string): Promise<'allow' | 'deny'> => {
+          const detection = detectDangerousCommand(command);
+          if (!detection.matched) return 'allow';
+          if (approvalStore.isPreApproved(chatId, detection.patternKey)) return 'allow';
+          const choice = await approvalStore.promptApproval(chatId, {
+            command,
+            description: detection.description,
+            patternKey: detection.patternKey,
+          });
+          return choice === 'deny' ? 'deny' : 'allow';
+        }
+      : undefined;
+
     let executionHandle = this.executor.startExecution({
       prompt,
       cwd,
@@ -1295,6 +1364,7 @@ export class MessageBridge {
       maxTurns: options.maxTurns,
       model: options.model,
       allowedTools: options.allowedTools,
+      approvalHandler,
     });
 
     const startTime = Date.now();
@@ -1695,6 +1765,7 @@ export class MessageBridge {
       clearTimeout(timeoutId);
       if (idleTimerId) clearTimeout(idleTimerId);
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       this.runningTasks.delete(chatId);
       metrics.setGauge('metabot_active_tasks', this.runningTasks.size);
       this.processQueue(chatId);

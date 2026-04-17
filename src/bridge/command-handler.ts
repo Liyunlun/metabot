@@ -7,11 +7,14 @@ import { MemoryClient } from '../memory/memory-client.js';
 import { AuditLogger } from '../utils/audit-logger.js';
 import type { DocSync } from '../sync/doc-sync.js';
 import { ensureSkillInstalled, ensureSkillsInstalled } from '../utils/skill-installer.js';
+import { approvalStore } from '../security/approval-store.js';
+import type { ApprovalBridge } from '../security/approval-bridge.js';
 
 const CONTRIBUTION_SKILLS = ['report-bug', 'fix-issue', 'request-feature'];
 
 export class CommandHandler {
   private docSync: DocSync | null = null;
+  private approvalBridge: ApprovalBridge | null = null;
 
   constructor(
     private config: BotConfigBase,
@@ -27,6 +30,15 @@ export class CommandHandler {
   /** Set the doc sync service (optional, only available for Feishu bots). */
   setDocSync(docSync: DocSync): void {
     this.docSync = docSync;
+  }
+
+  /**
+   * Bind the dangerous-command approval bridge (optional — only wired on
+   * platforms that support raw cards, currently Feishu). When unset, the
+   * /approve /deny /yolo commands respond with a "not supported" notice.
+   */
+  setApprovalBridge(bridge: ApprovalBridge): void {
+    this.approvalBridge = bridge;
   }
 
   /** Returns true if the message was handled as a command, false otherwise. */
@@ -49,6 +61,8 @@ export class CommandHandler {
           '`/memory` - Memory document commands',
           '`/model [opus|sonnet|haiku]` - View or switch Claude model',
           '`/effort [low|medium|high|max]` - View or switch effort level',
+          '`/approve` / `/deny` - Resolve the oldest pending dangerous-command approval',
+          '`/yolo [on|off]` - Auto-approve dangerous commands (use carefully)',
           '`/help` - Show this help message',
           '',
           '**Usage:**',
@@ -73,6 +87,10 @@ export class CommandHandler {
 
       case '/reset':
         this.sessionManager.resetSession(chatId);
+        // Also clear per-chat approval state (YOLO, session allowlist, any
+        // queued pending approvals). Permanent allowlist is global and
+        // intentionally survives /reset.
+        approvalStore.clearSession(chatId);
         await this.sender.sendTextNotice(chatId, '✅ Session Reset', 'Conversation cleared. Working directory preserved.', 'green');
         return true;
 
@@ -131,6 +149,43 @@ export class CommandHandler {
           await this.sender.sendTextNotice(chatId, '✅ Effort Level Changed', `**${prev}** → **${arg}**`, 'green');
         } else {
           await this.sender.sendTextNotice(chatId, '❌ Invalid Effort Level', `\`${arg}\` is not valid. Use: \`low\`, \`medium\`, \`high\`, or \`max\``, 'red');
+        }
+        return true;
+      }
+
+      case '/approve':
+      case '/deny': {
+        // Resolve the oldest pending dangerous-command approval in this chat.
+        // `/approve` maps to a one-shot 'once' allow; users that want session
+        // or permanent allow should click the corresponding card button.
+        if (!this.approvalBridge) {
+          await this.sender.sendTextNotice(chatId, 'ℹ️ Not Available', 'Approval commands are not supported on this platform.', 'blue');
+          return true;
+        }
+        const choice = cmd.toLowerCase() === '/approve' ? 'once' : 'deny';
+        const resolved = this.approvalBridge.resolveNextByText(chatId, choice as 'once' | 'deny', userId);
+        if (resolved === 0) {
+          await this.sender.sendTextNotice(chatId, 'ℹ️ No Pending Approval', 'There is no dangerous-command approval waiting in this chat.', 'blue');
+        }
+        return true;
+      }
+
+      case '/yolo': {
+        // `/yolo on|off` toggles auto-approval for this chat session.
+        // Without args, reports the current state. YOLO does NOT persist
+        // across sessions — it is cleared on /reset or process restart.
+        const arg = text.slice('/yolo'.length).trim().toLowerCase();
+        if (!arg) {
+          const on = approvalStore.isYolo(chatId);
+          await this.sender.sendTextNotice(chatId, '🤠 YOLO Mode', `Current: **${on ? 'on' : 'off'}**\n\nUsage: \`/yolo on|off\`\n\nWhen on, all dangerous commands auto-approve for this chat.`, on ? 'orange' : 'blue');
+        } else if (arg === 'on') {
+          approvalStore.setYolo(chatId, true);
+          await this.sender.sendTextNotice(chatId, '🤠 YOLO On', 'Dangerous commands will auto-approve for this chat. Use `/yolo off` to disable.', 'orange');
+        } else if (arg === 'off') {
+          approvalStore.setYolo(chatId, false);
+          await this.sender.sendTextNotice(chatId, '✅ YOLO Off', 'Dangerous commands will prompt for approval again.', 'green');
+        } else {
+          await this.sender.sendTextNotice(chatId, '❌ Invalid Argument', `\`${arg}\` is not valid. Use: \`on\` or \`off\``, 'red');
         }
         return true;
       }
