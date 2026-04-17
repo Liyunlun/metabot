@@ -39,6 +39,53 @@ describe('normalizeCommandForDetection', () => {
   it('leaves already-plain input untouched', () => {
     expect(normalizeCommandForDetection('ls -la')).toBe('ls -la');
   });
+
+  it('strips DCS sequence (ESC P ... ESC \\)', () => {
+    const s = '\x1bPqPAYLOAD\x1b\\rm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips SOS sequence (ESC X ... ESC \\)', () => {
+    const s = '\x1bXxxx\x1b\\rm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips PM sequence (ESC ^ ... ESC \\)', () => {
+    const s = '\x1b^priv\x1b\\rm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips APC sequence (ESC _ ... ESC \\)', () => {
+    const s = '\x1b_app\x1b\\rm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips nF escape sequences (ESC + intermediates + final)', () => {
+    // ESC ( B  — ASCII character-set designator, classic nF escape
+    const s = 'rm \x1b(B-rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips Fp single-byte escape (ESC + 0x30-0x7e)', () => {
+    // ESC = (application keypad mode) — Fp class, single-byte
+    const s = 'rm \x1b=-rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips 8-bit OSC terminated by 0x9C (ST)', () => {
+    const s = '\x9d0;title\x9crm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips 8-bit OSC terminated by BEL', () => {
+    const s = '\x9d0;title\x07rm -rf /tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
+
+  it('strips stray 8-bit C1 controls (0x80-0x9F)', () => {
+    const s = 'rm\x85 -rf \x90\x98/tmp/foo';
+    expect(normalizeCommandForDetection(s)).toBe('rm -rf /tmp/foo');
+  });
 });
 
 describe('DANGEROUS_PATTERNS', () => {
@@ -182,6 +229,22 @@ describe('detectDangerousCommand — obfuscation defenses', () => {
 
   it('detects combined obfuscation (fullwidth + color)', () => {
     const cmd = '\x1b[31mｒｍ\x1b[0m -rf /tmp/foo';
+    expect(detectDangerousCommand(cmd).matched).toBe(true);
+  });
+
+  it('detects rm -rf hidden behind nF escape (ESC ( B)', () => {
+    // `rm <nF escape> -rf /tmp/foo` — stripper must remove nF or bypass succeeds
+    const cmd = 'rm \x1b(B-rf /tmp/foo';
+    expect(detectDangerousCommand(cmd).matched).toBe(true);
+  });
+
+  it('detects rm -rf hidden behind 8-bit OSC (ST terminated)', () => {
+    const cmd = '\x9d0;title\x9crm -rf /tmp/foo';
+    expect(detectDangerousCommand(cmd).matched).toBe(true);
+  });
+
+  it('detects rm -rf hidden behind stray C1 controls', () => {
+    const cmd = 'rm\x85 -rf /tmp/foo';
     expect(detectDangerousCommand(cmd).matched).toBe(true);
   });
 });

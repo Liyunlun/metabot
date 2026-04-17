@@ -12,6 +12,8 @@
  * Feishu cards, Smart Approval via Haiku) lives in sibling modules.
  */
 
+import { stripAnsi } from './ansi-strip.js';
+
 // ---------------------------------------------------------------------------
 // Sensitive write targets — referenced by several patterns below.
 // ---------------------------------------------------------------------------
@@ -149,40 +151,11 @@ export const DANGEROUS_PATTERNS: DangerousPattern[] = [
 // Normalization — strips ANSI escapes, null bytes, and applies Unicode NFKC
 // so that obfuscation techniques (fullwidth Latin, ANSI-colored binaries,
 // null-byte injection) cannot bypass pattern detection.
+//
+// The ANSI stripper lives in `./ansi-strip.ts` and is a 1:1 port of Hermes's
+// `tools/ansi_strip.py` — full ECMA-48 coverage (CSI/OSC/DCS/SOS/PM/APC, nF
+// escapes, Fp/Fe/Fs escapes, 8-bit CSI/OSC, stray C1 controls).
 // ---------------------------------------------------------------------------
-
-/**
- * ECMA-48 compliant ANSI escape stripper. Covers:
- *  - CSI sequences: `ESC [ ... final-byte`
- *  - OSC sequences: `ESC ] ... BEL` or `ESC ] ... ESC \`
- *  - DCS / SOS / PM / APC: `ESC P/X/^/_ ... ESC \`
- *  - Single-char escapes: `ESC <any>` (cursor, charset, etc.)
- *  - 8-bit C1 controls: `\x9B` (CSI), `\x9D` (OSC), etc.
- */
-/* eslint-disable no-control-regex -- this function's entire purpose is to match control bytes */
-function stripAnsi(input: string): string {
-  // Handle 8-bit C1 controls first by mapping them to their 7-bit equivalents
-  // so the subsequent regex passes catch them uniformly.
-  let s = input
-    .replace(/\x9B/g, '\x1B[')
-    .replace(/\x9D/g, '\x1B]')
-    .replace(/\x90/g, '\x1BP')
-    .replace(/\x98/g, '\x1BX')
-    .replace(/\x9E/g, '\x1B^')
-    .replace(/\x9F/g, '\x1B_');
-
-  // OSC: ESC ] ... (BEL | ESC \)
-  s = s.replace(/\x1B\][\s\S]*?(?:\x07|\x1B\\)/g, '');
-  // DCS / SOS / PM / APC: ESC P/X/^/_ ... ESC \
-  s = s.replace(/\x1B[PX^_][\s\S]*?\x1B\\/g, '');
-  // CSI: ESC [ <params> <final-byte 0x40-0x7E>
-  s = s.replace(/\x1B\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]/g, '');
-  // Remaining single-char escapes: ESC <byte>
-  s = s.replace(/\x1B[@-Z\\-_]/g, '');
-
-  return s;
-}
-/* eslint-enable no-control-regex */
 
 /**
  * Normalize a command string before dangerous-pattern matching.
