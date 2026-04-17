@@ -166,11 +166,39 @@ export class ApprovalStore {
    * and we wire in the real file-backed implementation once we have a
    * logger available.
    *
-   * Calling this a second time replaces the previous store and re-loads.
+   * Race-safety: the bridge can accept `/approve always` / button clicks
+   * during the async `load()` window, which would call `approvePermanent`
+   * and mutate the in-memory set. We handle that by:
+   *   1. Reading disk FIRST (before touching internal state), so load
+   *      happens against a stable snapshot.
+   *   2. Snapshotting any pre-existing in-memory entries (from either a
+   *      prior attach or a racing approvePermanent call).
+   *   3. Merging disk + pre-existing — disk is authoritative for entries
+   *      it knows about, but nothing the user approved during the race
+   *      window is lost.
+   *   4. Saving if the merge introduced entries disk didn't have, so the
+   *      next boot sees them.
+   *
+   * Calling this a second time replaces the previous store and re-merges.
    */
   async attachPermanentStore(store: PermanentStore): Promise<void> {
+    const diskKeys = await store.load();
+    const preexisting = new Set(this.permanentApproved);
+    // Reset to disk view first.
+    this.permanentApproved.clear();
+    for (const k of diskKeys) this.permanentApproved.add(k);
     this.permanentStore = store;
-    await this.loadPermanent();
+    // Rescue any in-memory entries that the reset above would otherwise
+    // have silently dropped (race-window approvals, or state from a
+    // previously-attached store).
+    let needsSave = false;
+    for (const p of preexisting) {
+      if (!this.permanentApproved.has(p)) {
+        this.permanentApproved.add(p);
+        needsSave = true;
+      }
+    }
+    if (needsSave) void this.savePermanent();
   }
 
   private async savePermanent(): Promise<void> {

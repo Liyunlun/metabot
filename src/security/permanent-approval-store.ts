@@ -88,6 +88,12 @@ export class PermanentApprovalStore implements PermanentStore {
    * Atomic write — serialize to a sibling tmp file then rename over the
    * target. Ensures a crash/kill during save cannot corrupt the existing
    * allowlist.
+   *
+   * Permissions: file is written with mode `0o600` (owner-only read/write)
+   * and the containing directory is created `0o700`. The allowlist reflects
+   * the user's security decisions and can include command patterns that
+   * reveal intent ("sudo pacman -Syu", "rm -rf /home/me/proj") — treat it
+   * as sensitive and keep it out of group/world read.
    */
   save(keys: string[]): void {
     const payload: PersistedFile = {
@@ -97,10 +103,24 @@ export class PermanentApprovalStore implements PermanentStore {
     };
     const dir = path.dirname(this.filePath);
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const tmp = `${this.filePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+      // Pass mode explicitly — without it, the created file inherits
+      // `0o666 & ~umask` (0o644 on typical systems), making the allowlist
+      // world-readable.
+      fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
       fs.renameSync(tmp, this.filePath);
+      // If the rename inherited permissive perms from a pre-existing file
+      // (renames preserve the destination's mode on some platforms), force
+      // 0o600. chmod is a no-op if already 0o600.
+      try {
+        fs.chmodSync(this.filePath, 0o600);
+      } catch {
+        // Ignore chmod failures — the write itself succeeded.
+      }
     } catch (err) {
       this.onError('failed to save permanent approvals', err);
       // Re-throw so approvalStore.savePermanent's catch can log at that layer

@@ -178,7 +178,7 @@ describe('ApprovalStore.attachPermanentStore — hydration', () => {
     expect(approvals.revokePermanent('never added')).toBe(false);
   });
 
-  it('attaching a new store replaces the existing allowlist from disk', async () => {
+  it('attaching a new store merges disk contents and preserves prior in-memory entries', async () => {
     const approvals = new ApprovalStore();
 
     const firstFile = tmpFile();
@@ -186,9 +186,90 @@ describe('ApprovalStore.attachPermanentStore — hydration', () => {
     await approvals.attachPermanentStore(new PermanentApprovalStore({ filePath: firstFile }));
     expect(approvals.getPermanentApprovals()).toEqual(['from-first']);
 
+    // Switching stores preserves the prior in-memory state (merged with
+    // new disk contents) and persists the union to the new store.
     const secondFile = tmpFile();
     new PermanentApprovalStore({ filePath: secondFile }).save(['from-second']);
     await approvals.attachPermanentStore(new PermanentApprovalStore({ filePath: secondFile }));
-    expect(approvals.getPermanentApprovals()).toEqual(['from-second']);
+    await new Promise((r) => setImmediate(r));
+    expect(approvals.getPermanentApprovals().sort()).toEqual(['from-first', 'from-second']);
+    expect(new PermanentApprovalStore({ filePath: secondFile }).load().sort()).toEqual([
+      'from-first',
+      'from-second',
+    ]);
+  });
+
+  // Regression: Codex round-1 race finding. Simulates approvePermanent
+  // racing the attach/load window via a slow async `load()`.
+  it('preserves approvePermanent calls that race the async hydration', async () => {
+    const approvals = new ApprovalStore();
+
+    const filePath = tmpFile();
+    new PermanentApprovalStore({ filePath }).save(['from-disk']);
+
+    // Wrap the file-backed store so `load()` yields the event loop, giving
+    // us a window to call approvePermanent mid-hydration.
+    const inner = new PermanentApprovalStore({ filePath });
+    const slowStore = {
+      async load(): Promise<string[]> {
+        // Two microtask turns — long enough to let the external
+        // approvePermanent call run.
+        await new Promise((r) => setImmediate(r));
+        return inner.load();
+      },
+      save(keys: string[]): void {
+        inner.save(keys);
+      },
+    };
+
+    const attachPromise = approvals.attachPermanentStore(slowStore);
+    // Race: this runs BEFORE attach's load completes.
+    approvals.approvePermanent('race-window-added');
+    await attachPromise;
+    await new Promise((r) => setImmediate(r));
+
+    // Both the disk entry AND the race-window entry should be present.
+    expect(approvals.getPermanentApprovals().sort()).toEqual([
+      'from-disk',
+      'race-window-added',
+    ]);
+    // And the race-window entry was persisted so it survives restart.
+    expect(new PermanentApprovalStore({ filePath }).load().sort()).toEqual([
+      'from-disk',
+      'race-window-added',
+    ]);
+  });
+});
+
+describe('PermanentApprovalStore — file permissions', () => {
+  // Skip on platforms where permission bits don't apply (Windows).
+  const runOnUnix = process.platform === 'win32' ? it.skip : it;
+
+  runOnUnix('writes the allowlist file with mode 0600 (owner-only)', () => {
+    const filePath = tmpFile();
+    const store = new PermanentApprovalStore({ filePath });
+    store.save(['secret-pattern']);
+    const stat = fs.statSync(filePath);
+    // Mask off filetype bits; compare permission bits only.
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  runOnUnix('creates the parent directory with mode 0700', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metabot-approval-test-'));
+    const filePath = path.join(dir, 'nested-dir', 'approvals.json');
+    new PermanentApprovalStore({ filePath }).save(['x']);
+    const stat = fs.statSync(path.dirname(filePath));
+    // Directories should be 0700 (0x40000 is the directory bit).
+    expect(stat.mode & 0o777).toBe(0o700);
+  });
+
+  runOnUnix('overwrites an existing permissive-mode file to 0600', () => {
+    const filePath = tmpFile();
+    // Pre-create a world-readable file at the target to simulate a user
+    // who created it via `touch` or a previous build before the 0o600 fix.
+    fs.writeFileSync(filePath, '{"version":1,"patterns":[]}', { mode: 0o644 });
+    new PermanentApprovalStore({ filePath }).save(['after']);
+    const stat = fs.statSync(filePath);
+    expect(stat.mode & 0o777).toBe(0o600);
   });
 });
