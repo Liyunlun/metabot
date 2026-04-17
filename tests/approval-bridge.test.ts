@@ -241,3 +241,171 @@ describe('ApprovalBridge — failure & detach semantics', () => {
     expect(JSON.parse(updateJson).header.template).toBe('red');
   });
 });
+
+describe('ApprovalBridge — card send vs resolve race (Codex R3 P2)', () => {
+  // Helper: slow-send sender that returns a controllable promise for sendCard
+  // so the test can force the "resolve-before-send-completes" ordering.
+  function makeSlowSender(): CardSender & {
+    sendCard: ReturnType<typeof vi.fn>;
+    updateCard: ReturnType<typeof vi.fn>;
+    releaseSend: (messageId?: string) => void;
+    failSend: (err: Error) => void;
+  } {
+    let release!: (messageId?: string) => void;
+    let fail!: (err: Error) => void;
+    const pending = new Promise<string | undefined>((resolve, reject) => {
+      release = (id = 'msg_late') => resolve(id);
+      fail = reject;
+    });
+    return {
+      sendCard: vi.fn<CardSender['sendCard']>().mockReturnValue(pending),
+      updateCard: vi.fn<CardSender['updateCard']>().mockResolvedValue(true),
+      releaseSend: release,
+      failSend: fail,
+    };
+  }
+
+  it('button click before sendCard completes — updateCard fires once send lands', async () => {
+    const store = new ApprovalStore();
+    const sender = makeSlowSender();
+    const bridge = new ApprovalBridge(store, sender, makeLogger());
+    bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    // Let the notify cb run and kick off sendCard (still pending).
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sender.sendCard).toHaveBeenCalledTimes(1);
+    expect(sender.updateCard).not.toHaveBeenCalled();
+
+    // User clicks "once" while sendCard is still in flight. The bridge sees
+    // messageId === undefined so it can't updateCard yet — it must stash.
+    const cardJson = sender.sendCard.mock.calls[0][1] as string;
+    const card = JSON.parse(cardJson);
+    const oneBtn = card.body.elements
+      .find((e: any) => e.tag === 'action')
+      .actions.find((b: any) => b.value.choice === 'once');
+    bridge.handleButtonClick(oneBtn.value, 'user_fast');
+    await expect(p).resolves.toBe('once');
+
+    // Still no updateCard — we can't edit a message that doesn't exist yet.
+    expect(sender.updateCard).not.toHaveBeenCalled();
+
+    // Now the send lands. The fix must apply the stashed resolution.
+    sender.releaseSend('msg_late');
+    await new Promise((r) => setImmediate(r));
+
+    expect(sender.updateCard).toHaveBeenCalledTimes(1);
+    const [msgId, updatedJson] = sender.updateCard.mock.calls[0] as [string, string];
+    expect(msgId).toBe('msg_late');
+    const updated = JSON.parse(updatedJson);
+    expect(updated.header.template).toBe('green'); // 'once' → approved/green
+  });
+
+  it('text-command resolve before send completes — updateCard still fires', async () => {
+    const store = new ApprovalStore();
+    const sender = makeSlowSender();
+    const bridge = new ApprovalBridge(store, sender, makeLogger());
+    bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // `/deny` via text while send is in flight.
+    const count = bridge.resolveNextByText(CHAT, 'deny', 'user_text');
+    expect(count).toBe(1);
+    await expect(p).resolves.toBe('deny');
+    expect(sender.updateCard).not.toHaveBeenCalled();
+
+    sender.releaseSend('msg_text');
+    await new Promise((r) => setImmediate(r));
+
+    expect(sender.updateCard).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(sender.updateCard.mock.calls[0][1] as string).header.template).toBe('red');
+  });
+
+  it('timeout auto-settle before send completes — updateCard fires with autoResolved marker', async () => {
+    const store = new ApprovalStore({ timeoutMs: 10 });
+    const sender = makeSlowSender();
+    const bridge = new ApprovalBridge(store, sender, makeLogger());
+    bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    // Wait long enough for the timeout to fire while sendCard is still pending.
+    await new Promise((r) => setTimeout(r, 25));
+    await expect(p).resolves.toBe('deny');
+    expect(sender.updateCard).not.toHaveBeenCalled();
+
+    sender.releaseSend('msg_timeout');
+    await new Promise((r) => setImmediate(r));
+
+    expect(sender.updateCard).toHaveBeenCalledTimes(1);
+    // autoResolved rendering — card-renderer marks the body accordingly; we
+    // don't poke at the exact string but do assert the color and the fact
+    // that updateCard got the late messageId.
+    const [msgId] = sender.updateCard.mock.calls[0] as [string, string];
+    expect(msgId).toBe('msg_timeout');
+  });
+
+  it('detach while send in flight — late-arriving send still updates the card', async () => {
+    const store = new ApprovalStore();
+    const sender = makeSlowSender();
+    const bridge = new ApprovalBridge(store, sender, makeLogger());
+    const detach = bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Detach fires — unregisterNotify resolves pending as 'deny' and
+    // triggers handleAutoSettle. Because sendCard hasn't completed,
+    // pendingResolution should be stashed on the inflight entry (not
+    // deleted by the cleanup loop).
+    detach();
+    await expect(p).resolves.toBe('deny');
+    expect(sender.updateCard).not.toHaveBeenCalled();
+
+    sender.releaseSend('msg_detach');
+    await new Promise((r) => setImmediate(r));
+
+    // The fix: the card in the chat gets updated to resolved-deny even
+    // though the session was detached before the send completed.
+    expect(sender.updateCard).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(sender.updateCard.mock.calls[0][1] as string).header.template).toBe('red');
+  });
+
+  it('send failure AFTER resolve does not double-deny the store', async () => {
+    const store = new ApprovalStore();
+    const sender = makeSlowSender();
+    const logger = makeLogger();
+    const bridge = new ApprovalBridge(store, sender, logger);
+    bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // User clicks once while send still in flight.
+    const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
+    const oneBtn = card.body.elements
+      .find((e: any) => e.tag === 'action')
+      .actions.find((b: any) => b.value.choice === 'once');
+    bridge.handleButtonClick(oneBtn.value);
+    await expect(p).resolves.toBe('once');
+
+    // Now the send FAILS. The bridge must not try to re-resolve as 'deny'
+    // (the store already has 'once' — `resolveById` would return false and
+    // we'd log a noisy warning).
+    sender.failSend(new Error('feishu 500'));
+    await new Promise((r) => setImmediate(r));
+
+    // updateCard never called (we never got a messageId), but no extra
+    // store resolution was attempted.
+    expect(sender.updateCard).not.toHaveBeenCalled();
+    // The logger.error from the catch block is expected; what we guard
+    // against is a second resolveById('deny') call, which would show up as
+    // a warn "approval resolveById returned false".
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});

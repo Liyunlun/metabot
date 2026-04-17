@@ -53,6 +53,21 @@ interface InflightApproval {
   messageId?: string;
   request: ApprovalRequest;
   resolved: boolean;
+  /**
+   * Set when a resolution (button click, text command, auto-settle) fires
+   * BEFORE `sendCard()` has returned a `messageId`. Without this, the
+   * resolved-card update would be dropped because we don't yet know which
+   * message to edit, and the pending orange card would stay visible forever
+   * once the send eventually lands. When `sendCard().then()` finally sets
+   * `messageId`, it consumes this to apply the resolved render.
+   *
+   * Codex R3 P2: "card send resolves late → resolved result dropped".
+   */
+  pendingResolution?: {
+    choice: ApprovalChoice;
+    operator?: string;
+    autoResolved: boolean;
+  };
 }
 
 export class ApprovalBridge {
@@ -89,28 +104,53 @@ export class ApprovalBridge {
       // sendCard is async — we do NOT await it in the notify cb (the cb is
       // sync-ish). If the send fails, we surface via onError and auto-deny
       // so the agent doesn't wait on a message the user will never see.
+      //
+      // Race handling: the approval can resolve (user clicks fast, text
+      // `/approve`, timeout, detach) BEFORE sendCard returns. When that
+      // happens, `resolve()` / `handleAutoSettle()` stash a
+      // `pendingResolution` on the inflight entry instead of deleting it.
+      // Here we consume that stash to apply the resolved card render once
+      // the messageId finally lands, so the user never sees a perpetually-
+      // orange pending card for an already-settled approval.
       this.sender
         .sendCard(chatId, card)
         .then((messageId) => {
           const current = this.inflight.get(approvalId);
-          if (!current || current.resolved) return;
+          if (!current) return;
           current.messageId = messageId;
+          if (current.resolved && current.pendingResolution) {
+            const { choice, operator, autoResolved } = current.pendingResolution;
+            this.applyResolvedCard(approvalId, current, choice, operator, autoResolved);
+            this.inflight.delete(approvalId);
+          }
         })
         .catch((err) => {
           this.logger.error(
             { approvalId, chatId, err: (err as Error).message },
             'approval card send failed — auto-denying',
           );
+          const current = this.inflight.get(approvalId);
           this.inflight.delete(approvalId);
-          this.store.resolveById(approvalId, 'deny');
+          // Only drive a store-side deny if the entry wasn't already resolved
+          // by the user path — otherwise we'd double-resolve (harmless but
+          // noisy: `resolveById` returns false on the second call).
+          if (!current?.resolved) {
+            this.store.resolveById(approvalId, 'deny');
+          }
         });
     });
 
     return () => {
       this.store.unregisterNotify(chatId);
-      // Clean up any inflight entries for this chat to prevent unbounded growth.
+      // Clean up inflight entries for this chat. Preserve entries whose
+      // `sendCard()` is still in flight with a stashed `pendingResolution` —
+      // the send's .then() is about to consume it to render the final card,
+      // after which it self-deletes. Purging them here would re-introduce
+      // the Codex R3 P2 bug for the detach-while-sending timing.
       for (const [id, entry] of this.inflight) {
-        if (entry.chatId === chatId) this.inflight.delete(id);
+        if (entry.chatId !== chatId) continue;
+        const sendStillInFlight = !entry.messageId && entry.pendingResolution;
+        if (!sendStillInFlight) this.inflight.delete(id);
       }
     };
   }
@@ -157,20 +197,13 @@ export class ApprovalBridge {
     entry.resolved = true;
 
     if (entry.messageId) {
-      const card = buildResolvedApprovalCard({
-        approvalId,
-        request: entry.request,
-        choice,
-        autoResolved: true,
-      });
-      this.sender.updateCard(entry.messageId, card).catch((err) => {
-        this.logger.error(
-          { approvalId, messageId: entry.messageId, err: (err as Error).message },
-          'failed to update auto-resolved approval card',
-        );
-      });
+      this.applyResolvedCard(approvalId, entry, choice, undefined, true);
+      this.inflight.delete(approvalId);
+    } else {
+      // sendCard hasn't returned yet — stash so its .then() can finish the
+      // render instead of dropping the resolution on the floor.
+      entry.pendingResolution = { choice, autoResolved: true };
     }
-    this.inflight.delete(approvalId);
   }
 
   private resolve(
@@ -192,25 +225,46 @@ export class ApprovalBridge {
       );
     }
 
-    // Re-render the card in resolved state. Skip if we never got a messageId
-    // (sendCard hadn't completed by the time of resolution — rare).
+    // Re-render the card in resolved state.
     if (entry.messageId) {
-      const card = buildResolvedApprovalCard({
-        approvalId,
-        request: entry.request,
-        choice,
-        operator,
-        autoResolved,
-      });
-      this.sender.updateCard(entry.messageId, card).catch((err) => {
-        this.logger.error(
-          { approvalId, messageId: entry.messageId, err: (err as Error).message },
-          'failed to update resolved approval card',
-        );
-      });
+      this.applyResolvedCard(approvalId, entry, choice, operator, autoResolved);
+      this.inflight.delete(approvalId);
+    } else {
+      // sendCard hasn't completed yet — stash the resolution so the send's
+      // .then() can finish the render once the messageId lands. The
+      // orange pending card would otherwise stay visible even after the
+      // agent has moved on.
+      entry.pendingResolution = { choice, operator, autoResolved };
     }
+  }
 
-    this.inflight.delete(approvalId);
+  /**
+   * Render the resolved card and push it via `updateCard`. Extracted so the
+   * three resolution paths (button/text `resolve`, out-of-band
+   * `handleAutoSettle`, late-send consumption of `pendingResolution`) share
+   * the same update logic.
+   */
+  private applyResolvedCard(
+    approvalId: string,
+    entry: InflightApproval,
+    choice: ApprovalChoice,
+    operator: string | undefined,
+    autoResolved: boolean,
+  ): void {
+    if (!entry.messageId) return;
+    const card = buildResolvedApprovalCard({
+      approvalId,
+      request: entry.request,
+      choice,
+      operator,
+      autoResolved,
+    });
+    this.sender.updateCard(entry.messageId, card).catch((err) => {
+      this.logger.error(
+        { approvalId, messageId: entry.messageId, err: (err as Error).message },
+        'failed to update resolved approval card',
+      );
+    });
   }
 }
 
