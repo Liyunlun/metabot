@@ -719,7 +719,7 @@ export class MessageBridge {
     const thinkingTimerId = setInterval(() => {
       if (lastState.startTime && (lastState.status === 'thinking' || lastState.status === 'running')) {
         // Re-render the card with updated elapsed time
-        rateLimiter.schedule(() => this.sender.updateCard(messageId, lastState));
+        rateLimiter.schedule(() => this.sender.updateCard(messageId, lastState).catch(() => false));
       }
     }, 3000);
 
@@ -846,10 +846,11 @@ export class MessageBridge {
               turnBuffer = '';
             }
 
-            // Throttled card update for non-final states
-            rateLimiter.schedule(() => {
-              this.sender.updateCard(messageId, state).catch(() => {});
-            });
+            // Throttled card update for non-final states. Return the promise
+            // so rateLimiter.flush() can await the in-flight update before
+            // recreateCard freezes the card — otherwise the stale update can
+            // land after the freeze and revert it to thinking/running state.
+            rateLimiter.schedule(() => this.sender.updateCard(messageId, state).catch(() => false));
           }
           // Stream ended normally
           streamDone = true;
@@ -952,7 +953,7 @@ export class MessageBridge {
             needsRecreate = false;
             turnBuffer = '';
           }
-          rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
+          rateLimiter.schedule(() => this.sender.updateCard(messageId, state).catch(() => false));
         }
         await rateLimiter.cancelAndWait();
       }
@@ -1032,7 +1033,7 @@ export class MessageBridge {
               needsRecreate = false;
               turnBuffer = '';
             }
-            rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
+            rateLimiter.schedule(() => this.sender.updateCard(messageId, state).catch(() => false));
           }
           await rateLimiter.cancelAndWait();
           if (turnBuffer && !needsRecreate) ++turnCount;
@@ -1325,9 +1326,7 @@ export class MessageBridge {
                 needsRecreate = false;
                 turnBuffer = '';
               }
-              rateLimiter.schedule(() => {
-                this.sender.updateCard(messageId!, state).catch(() => {});
-              });
+              rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
             }
           }
           streamDone = true;
@@ -1429,7 +1428,7 @@ export class MessageBridge {
               needsRecreate = false;
               turnBuffer = '';
             }
-            rateLimiter.schedule(() => { this.sender.updateCard(messageId!, state); });
+            rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
           }
           options.onUpdate?.(state, effectiveMessageId, false);
         }
@@ -1519,7 +1518,7 @@ export class MessageBridge {
                 needsRecreate = false;
                 turnBuffer = '';
               }
-              rateLimiter.schedule(() => { this.sender.updateCard(messageId!, state); });
+              rateLimiter.schedule(() => this.sender.updateCard(messageId!, state).catch(() => false));
             }
             options.onUpdate?.(state, effectiveMessageId, false);
           }
