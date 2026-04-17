@@ -19,7 +19,7 @@ import { CostTracker } from '../utils/cost-tracker.js';
 import { metrics } from '../utils/metrics.js';
 import { splitResponseText } from '../feishu/card-builder.js';
 import type { SessionRegistry } from '../session/session-registry.js';
-import { approvalStore } from '../security/approval-store.js';
+import { approvalStore, buildSessionKey } from '../security/approval-store.js';
 import { PermanentApprovalStore } from '../security/permanent-approval-store.js';
 import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
 import { SmartApprovalClassifier } from '../security/smart-approval.js';
@@ -771,15 +771,20 @@ export class MessageBridge {
 
     // Attach the approval bridge for this task's lifetime. detach is called
     // in the finally block below. When approvalBridge is undefined (platforms
-    // without raw-card support), approvalHandler falls back to 'allow' and
-    // the system behaves as before Issue #14.
-    const detachApprovals = this.approvalBridge?.attachToSession(chatId);
+    // without raw-card support — currently anything that isn't Feishu),
+    // approvalHandler returns 'deny' for any flagged command that wasn't
+    // pre-approved or smart-approved (see Codex R3 P1 scope note in
+    // approval-handler.ts). Callers relying on cross-platform flagged-command
+    // execution will fail closed until a raw-card-equivalent surface lands.
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
 
     // Per-task Bash approval handler — full Phase 4 decision tree. Detects
     // flagged commands, consults the pre-approval cache, runs the hard-
     // blacklist + smart-approval pre-filter, and prompts the user via the
     // approval card only when the classifier escalates (or is unavailable).
     const approvalHandler = createApprovalHandler({
+      sessionKey,
       chatId,
       cwd,
       botName: this.config.name,
@@ -1299,7 +1304,7 @@ export class MessageBridge {
       this.sessionManager.resetSession(chatId);
       // Also clear per-chat approval state so a fresh API run doesn't inherit
       // YOLO / session allowlist from a previous operator.
-      approvalStore.clearSession(chatId);
+      approvalStore.clearSession(buildSessionKey(this.config.name, chatId));
       this.logger.info({ chatId }, 'Fresh session: cleared previous session');
     }
 
@@ -1366,8 +1371,10 @@ export class MessageBridge {
 
     // Same per-task approval wiring as the interactive path — see executeQuery
     // for the rationale. Safe no-op when approvalBridge is undefined.
-    const detachApprovals = this.approvalBridge?.attachToSession(chatId);
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
     const approvalHandler = createApprovalHandler({
+      sessionKey,
       chatId,
       cwd,
       botName: this.config.name,

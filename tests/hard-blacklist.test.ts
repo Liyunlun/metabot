@@ -523,6 +523,117 @@ describe('hard blacklist — broader block-device list (Codex round 4)', () => {
   });
 });
 
+// Claude round-4 independent review — bypass class that slipped past the
+// earlier regex: quoted root, absolute-path bin invocation, busybox wrapper,
+// semantic root (`/.`), and extra positional args after `/`.
+describe('hard blacklist — quoted/absolute/busybox rm -rf / (Claude round 4)', () => {
+  it('catches `rm -rf "/"` (double-quoted root)', () => {
+    expect(check('rm -rf "/"').blacklisted).toBe(true);
+  });
+
+  it("catches `rm -rf '/'` (single-quoted root)", () => {
+    expect(check("rm -rf '/'").blacklisted).toBe(true);
+  });
+
+  it('catches `rm -rf /.` (dot-trailing root is semantic root)', () => {
+    expect(check('rm -rf /.').blacklisted).toBe(true);
+  });
+
+  it('catches `rm -rf /./` (dot-slash-trailing root)', () => {
+    expect(check('rm -rf /./').blacklisted).toBe(true);
+  });
+
+  it('catches `rm -rf / tmp` (/ first positional, extra args after)', () => {
+    expect(check('rm -rf / tmp').blacklisted).toBe(true);
+  });
+
+  it('catches `rm -rf tmp /` (/ last positional after benign args)', () => {
+    expect(check('rm -rf tmp /').blacklisted).toBe(true);
+  });
+
+  it('catches `/bin/rm -rf /` (absolute path invocation)', () => {
+    expect(check('/bin/rm -rf /').blacklisted).toBe(true);
+  });
+
+  it('catches `/usr/bin/rm -rf /`', () => {
+    expect(check('/usr/bin/rm -rf /').blacklisted).toBe(true);
+  });
+
+  it('catches `/sbin/mkfs.ext4 /dev/sda` (sbin absolute path)', () => {
+    expect(check('/sbin/mkfs.ext4 /dev/sda').blacklisted).toBe(true);
+  });
+
+  it('catches `/usr/bin/dd if=/dev/zero of=/dev/sda`', () => {
+    expect(check('/usr/bin/dd if=/dev/zero of=/dev/sda').blacklisted).toBe(true);
+  });
+
+  it('catches `busybox rm -rf /` (busybox multi-call wrapper)', () => {
+    expect(check('busybox rm -rf /').blacklisted).toBe(true);
+  });
+
+  it('catches `toybox rm -rf /` (toybox multi-call wrapper)', () => {
+    expect(check('toybox rm -rf /').blacklisted).toBe(true);
+  });
+
+  it('catches `busybox dd if=/dev/zero of=/dev/sda`', () => {
+    expect(check('busybox dd if=/dev/zero of=/dev/sda').blacklisted).toBe(true);
+  });
+
+  it('catches `exec rm -rf /` (shell builtin replaces process)', () => {
+    expect(check('exec rm -rf /').blacklisted).toBe(true);
+  });
+
+  it('catches `sudo /bin/rm -rf /` (sudo + absolute-path)', () => {
+    expect(check('sudo /bin/rm -rf /').blacklisted).toBe(true);
+  });
+
+  // Benign controls — the broadened regex must not false-positive on these.
+  it('does NOT catch `/bin/ls /` (absolute path, benign cmd)', () => {
+    expect(check('/bin/ls /').blacklisted).toBe(false);
+  });
+
+  it('does NOT catch `/tmp/my-rm -rf /` (non-bin dir, unknown binary)', () => {
+    // Only system bin dirs are peeled; `/tmp/my-rm` stays a user-path command
+    // and falls through to the dangerous-patterns detector + smart approval.
+    expect(check('/tmp/my-rm -rf /').blacklisted).toBe(false);
+  });
+
+  it('does NOT catch `rm -rf /tmp/foo` (not root — subdir)', () => {
+    expect(check('rm -rf /tmp/foo').blacklisted).toBe(false);
+  });
+
+  it('does NOT catch `rm -rf ./foo ./bar` (relative paths)', () => {
+    expect(check('rm -rf ./foo ./bar').blacklisted).toBe(false);
+  });
+});
+
+// Claude round-4 independent review — shell-variable indirection that
+// defeats literal /dev/<device> matching. The supplemental pattern catches
+// `dd`/`mkfs` token co-located with a literal `/dev/<unsafe>` anywhere in
+// the line, so `target=/dev/sda; dd of=$target` is caught even though the
+// variable reference itself doesn't contain `/dev/`.
+describe('hard blacklist — dd/mkfs shell-var indirection (Claude round 4 M4)', () => {
+  it('catches `target=/dev/sda; dd of=$target`', () => {
+    expect(check('target=/dev/sda; dd of=$target').blacklisted).toBe(true);
+  });
+
+  it('catches `TARGET=/dev/sda && dd of=$TARGET`', () => {
+    expect(check('TARGET=/dev/sda && dd of=$TARGET').blacklisted).toBe(true);
+  });
+
+  it('catches `bash -c "X=/dev/sda dd of=$X"` (wrapped in bash -c)', () => {
+    expect(check('bash -c "X=/dev/sda dd of=$X"').blacklisted).toBe(true);
+  });
+
+  it('catches `T=/dev/nvme0n1; mkfs.ext4 $T`', () => {
+    expect(check('T=/dev/nvme0n1; mkfs.ext4 $T').blacklisted).toBe(true);
+  });
+
+  it('does NOT catch `TARGET=/tmp/foo; dd of=$TARGET` (benign var target)', () => {
+    expect(check('TARGET=/tmp/foo; dd of=$TARGET').blacklisted).toBe(false);
+  });
+});
+
 describe('hard blacklist — reason string is human readable', () => {
   it('returns a description when blacklisted', () => {
     const r = check('rm -rf /');

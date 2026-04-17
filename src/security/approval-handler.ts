@@ -66,7 +66,16 @@ export interface Logger {
 export type ClassifierLike = Pick<SmartApprovalClassifier, 'classify'>;
 
 export interface CreateApprovalHandlerDeps {
-  /** Session key — Feishu chat id, stable for the life of the task. */
+  /**
+   * Store-side session key — namespaced `${botName}\x00${chatId}` (see
+   * `buildSessionKey`). Codex R4 M1: splitting this from `chatId` keeps
+   * two bots sharing a chat-id from cross-contaminating approval state.
+   * When omitted, `chatId` is used as the session key — that degrades back
+   * to pre-M1 single-bot semantics and is appropriate for tests that only
+   * construct one bot per store instance.
+   */
+  sessionKey?: string;
+  /** Raw chat id, kept separate so audit entries and user-facing text stay stable. */
   chatId: string;
   /** Working directory surfaced to the smart classifier as disambiguation context. */
   cwd: string;
@@ -113,6 +122,7 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
     audit,
     logger,
   } = deps;
+  const sessionKey = deps.sessionKey ?? chatId;
 
   /**
    * Terminal audit emitter — one entry per resolved decision with a concrete
@@ -187,7 +197,7 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
 
     // Step 3 — session/permanent allowlist (or YOLO), only when NOT hard-
     // blacklisted. Hard blacklist is non-overridable by design.
-    if (!hard.blacklisted && approvalStore.isPreApproved(chatId, patternKey)) {
+    if (!hard.blacklisted && approvalStore.isPreApproved(sessionKey, patternKey)) {
       emitTerminal('allowlist_hit', 'allow', command, { patternKey });
       return 'allow';
     }
@@ -274,7 +284,7 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
     // silently auto-allow `rm -rf /`). The handler already checked allowlist
     // above for the non-blacklisted branch.
     const choice = await approvalStore.promptApproval(
-      chatId,
+      sessionKey,
       { command, description, patternKey },
       hard.blacklisted ? { bypassAllowlist: true } : undefined,
     );

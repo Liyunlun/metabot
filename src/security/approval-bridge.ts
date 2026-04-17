@@ -49,6 +49,13 @@ export interface ApprovalButtonValue {
 }
 
 interface InflightApproval {
+  /**
+   * Store-side key — a namespaced `${botName}\x00${chatId}` string. Used to
+   * match card clicks / text commands back to the right store queue even
+   * when two bots share a chat-id. See `buildSessionKey()` in approval-store.
+   */
+  sessionKey: string;
+  /** Sender-side address — the raw chat-id the Feishu API needs to post to. */
   chatId: string;
   messageId?: string;
   request: ApprovalRequest;
@@ -84,10 +91,15 @@ export class ApprovalBridge {
    * Bind this bridge to a chat session. The returned `detach()` cleans up the
    * notify callback and denies any pending approvals so the Promise layer
    * doesn't leak. Call this at task start, call the returned fn at task end.
+   *
+   * `sessionKey` is the store-side key (typically
+   * `buildSessionKey(botName, chatId)`); `chatId` is the sender-side address
+   * for card delivery. Codex R4 M1: separating the two keeps two bots that
+   * share a chat-id from cross-contaminating each other's approval state.
    */
-  attachToSession(chatId: string): () => void {
-    this.store.registerNotify(chatId, (approvalId, request) => {
-      const entry: InflightApproval = { chatId, request, resolved: false };
+  attachToSession(sessionKey: string, chatId: string = sessionKey): () => void {
+    this.store.registerNotify(sessionKey, (approvalId, request) => {
+      const entry: InflightApproval = { sessionKey, chatId, request, resolved: false };
       this.inflight.set(approvalId, entry);
 
       // Attach a settlement observer so out-of-band resolutions (timeout,
@@ -117,6 +129,26 @@ export class ApprovalBridge {
         .then((messageId) => {
           const current = this.inflight.get(approvalId);
           if (!current) return;
+
+          // Codex R4 H2: `MessageSender.sendCard()` signals transport failure
+          // by resolving `undefined` rather than rejecting (see
+          // message-bridge.ts:1852 — "sendCard swallows transport errors and
+          // returns undefined on failure"). Treat that identically to the
+          // `.catch()` path below — without this, `current.messageId` would
+          // stay undefined, no timeout fires by default, and the agent hangs
+          // on the Bash pre-tool hook until the whole task is aborted.
+          if (messageId === undefined) {
+            this.logger.error(
+              { approvalId, chatId },
+              'approval card send returned no messageId — auto-denying',
+            );
+            this.inflight.delete(approvalId);
+            if (!current.resolved) {
+              this.store.resolveById(approvalId, 'deny');
+            }
+            return;
+          }
+
           current.messageId = messageId;
           if (current.resolved && current.pendingResolution) {
             const { choice, operator, autoResolved } = current.pendingResolution;
@@ -141,14 +173,14 @@ export class ApprovalBridge {
     });
 
     return () => {
-      this.store.unregisterNotify(chatId);
-      // Clean up inflight entries for this chat. Preserve entries whose
+      this.store.unregisterNotify(sessionKey);
+      // Clean up inflight entries for this session. Preserve entries whose
       // `sendCard()` is still in flight with a stashed `pendingResolution` —
       // the send's .then() is about to consume it to render the final card,
       // after which it self-deletes. Purging them here would re-introduce
       // the Codex R3 P2 bug for the detach-while-sending timing.
       for (const [id, entry] of this.inflight) {
-        if (entry.chatId !== chatId) continue;
+        if (entry.sessionKey !== sessionKey) continue;
         const sendStillInFlight = !entry.messageId && entry.pendingResolution;
         if (!sendStillInFlight) this.inflight.delete(id);
       }
@@ -169,11 +201,14 @@ export class ApprovalBridge {
   /**
    * Handle `/approve` / `/deny` text commands. Resolves the oldest pending
    * approval in the given session. Returns the number of approvals resolved.
+   *
+   * `sessionKey` must match what was passed to `attachToSession` — i.e. the
+   * namespaced `buildSessionKey(botName, chatId)` value, not a bare chat-id.
    */
-  resolveNextByText(chatId: string, choice: ApprovalChoice, operator?: string): number {
-    // Find the oldest inflight for this chat.
+  resolveNextByText(sessionKey: string, choice: ApprovalChoice, operator?: string): number {
+    // Find the oldest inflight for this session.
     const entry = [...this.inflight.entries()].find(
-      ([, e]) => e.chatId === chatId && !e.resolved,
+      ([, e]) => e.sessionKey === sessionKey && !e.resolved,
     );
     if (!entry) return 0;
     this.resolve(entry[0], choice, operator, false);

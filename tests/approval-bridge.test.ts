@@ -177,6 +177,26 @@ describe('ApprovalBridge — failure & detach semantics', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  // Codex R4 H2 — Feishu's MessageSender signals transport failure by
+  // resolving `undefined` instead of rejecting (see
+  // message-bridge.ts:1852). The bridge must treat that identically to a
+  // rejection, otherwise the approval sits in `inflight` with no messageId
+  // and the agent hangs forever on the Bash pre-tool hook.
+  it('auto-denies when sendCard resolves `undefined` (transport silently failed)', async () => {
+    const store = new ApprovalStore();
+    const sender = makeSender();
+    sender.sendCard.mockResolvedValueOnce(undefined);
+    const logger = makeLogger();
+    const bridge = new ApprovalBridge(store, sender, logger);
+    bridge.attachToSession(CHAT);
+
+    const p = store.promptApproval(CHAT, REQ);
+    await expect(p).resolves.toBe('deny');
+    expect(logger.error).toHaveBeenCalled();
+    // No updateCard call — there's no messageId to update.
+    expect(sender.updateCard).not.toHaveBeenCalled();
+  });
+
   it('detach() denies all in-flight approvals for the chat', async () => {
     const store = new ApprovalStore();
     const sender = makeSender();

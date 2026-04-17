@@ -45,6 +45,26 @@ function stripCommandPrefix(cmd: string): string {
     // but executes the same binary. Strip the backslash so the regexes match.
     s = s.replace(/^\\(?=[a-zA-Z])/, '');
 
+    // Absolute-path invocation of a blacklisted command: `/bin/rm -rf /`,
+    // `/usr/bin/dd ...`, `/sbin/mkfs.ext4 ...`. The real binary is resolved
+    // by the path, not by $PATH; peel the directory so the regexes see the
+    // bare command name. Only peel the common system bin dirs — arbitrary
+    // paths could hint at a non-standard wrapper (a `my-rm` in some dev
+    // checkout is not guaranteed to behave like `rm`).
+    s = s.replace(
+      /^(?:\/usr\/local\/bin\/|\/usr\/local\/sbin\/|\/usr\/bin\/|\/usr\/sbin\/|\/bin\/|\/sbin\/)(?=(?:rm|dd|mkfs(?:\.[a-z0-9]+)?)(?:\s|$))/,
+      '',
+    );
+
+    // BusyBox / Toybox multi-call wrappers: `busybox rm -rf /`, `toybox dd …`.
+    // The first arg is the applet name (which is the real operation), so the
+    // wrapper is transparent w.r.t. the payload.
+    s = s.replace(/^(?:busybox|toybox)\s+(?=(?:rm|dd|mkfs(?:\.[a-z0-9]+)?)(?:\s|$))/, '');
+
+    // `exec` — shell builtin that replaces the current process with the
+    // following command; transparent for our purposes. Strip optional flags.
+    s = s.replace(/^exec(?:\s+-[aclins]+)?\s+/, '');
+
     // sudo [flags] [--]  — bare boolean flags (-E, -n, -i, -s, -b, -H, -A,
     // -k, -K) plus value-taking flags (-u USER, -g GROUP, -p PROMPT, -C FD,
     // -R CHROOT, -T TIMEOUT, -h HOST, -t TYPE, -r ROLE). Trailing `--`
@@ -127,11 +147,22 @@ function stripCommandPrefix(cmd: string): string {
  * All regexes run on the stripped command, so `^` means "the first token
  * of the real operation", not "absolute start of user input".
  */
+/**
+ * Match a root-sentinel argument: `/`, `"/"`, `'/'`, `/.`, `/*`. Used in
+ * `rm -rf <args>` detection so the pattern fires whether `/` appears as the
+ * sole arg, the first of several (`rm -rf / tmp` — still catastrophic),
+ * anywhere in the line, or in a quoted form. `/.` and `/./` are caught
+ * because `rm` resolves them to the root directory.
+ */
+const ROOT_ARG_RE = /(?:"\/"|'\/'|\/\.?\/?|\/\*)/.source;
+
 const HARD_BLACKLIST_PATTERNS: ReadonlyArray<{ regex: RegExp; reason: string }> = [
-  // rm -rf / (and trailing-slash variants). We match a bare `/` as the only
-  // argument (plus optional trailing comment) to avoid catching legitimate
-  // paths like `rm -rf /tmp/foo` — those go through the pattern detector
-  // and smart approval as usual.
+  // rm -rf / (and variants). We match when ANY argument token is a root
+  // sentinel (`/`, `"/"`, `'/'`, `/.`, `/*`) so the pattern fires even when
+  // the user slipped an extra positional arg in (`rm -rf / tmp` — still
+  // catastrophic) or quoted the root (`rm -rf "/"`). Benign paths like
+  // `rm -rf /tmp/foo` don't match because the token has more characters
+  // after `/`.
   //
   // The flag group accepts:
   //   - short clusters   (-rf, -Rf, -r, -f, -rv …)
@@ -139,14 +170,18 @@ const HARD_BLACKLIST_PATTERNS: ReadonlyArray<{ regex: RegExp; reason: string }> 
   //   - POSIX end-of-options (--)
   // Covers variants like `rm -rf /`, `rm -rf -- /`, `rm --recursive /`,
   // `rm --no-preserve-root -rf /`, `rm --recursive --force /`, and
-  // wrapper-prefixed forms like `sudo rm -rf /` (via stripCommandPrefix).
+  // wrapper-prefixed forms like `sudo rm -rf /`, `/bin/rm -rf /`,
+  // `busybox rm -rf /` (all via stripCommandPrefix).
   {
-    regex: /^\s*rm\s+(?:(?:-[a-zA-Z]+|--[a-zA-Z][a-zA-Z-]*|--)\s+)+\/\s*(?:#.*)?$/,
+    regex: new RegExp(
+      // Require at least one flag (so `rm /` without `-r` doesn't match —
+      // that's a different pattern class). Then look for a root-sentinel
+      // arg anywhere in the remaining command line, delimited by whitespace,
+      // EOL, or a comment. Other positional args (safe or not) are allowed
+      // before/after it.
+      `^\\s*rm(?:\\s+(?:-[a-zA-Z]+|--[a-zA-Z][a-zA-Z-]*|--))+(?:\\s+(?!(?:-|#))\\S+)*\\s+${ROOT_ARG_RE}(?:\\s|$|#)`,
+    ),
     reason: 'rm -rf / (root filesystem delete)',
-  },
-  {
-    regex: /^\s*rm\s+(?:(?:-[a-zA-Z]+|--[a-zA-Z][a-zA-Z-]*|--)\s+)+\/\*\s*(?:#.*)?$/,
-    reason: 'rm -rf /* (root glob delete)',
   },
 
   // dd writing to a real block device. Negative-list approach: any
@@ -159,6 +194,28 @@ const HARD_BLACKLIST_PATTERNS: ReadonlyArray<{ regex: RegExp; reason: string }> 
   {
     regex: /\bdd\b[^\n]*\bof\s*=\s*['"]?\/dev\/(?!(?:null|zero|stdin|stdout|stderr|tty|full|random|urandom)(?:['"]?(?:\s|$)))/,
     reason: 'dd to raw block device',
+  },
+
+  // M4 — dd/mkfs with a /dev/<device> path anywhere in the line, in EITHER
+  // order. Catches the shell-variable bypass (`target=/dev/sda; dd of=$target`
+  // or `bash -c "X=/dev/sda dd of=$X"`) by requiring both a dd/mkfs token
+  // AND a literal `/dev/<unsafe>` in the line without forcing them to be
+  // syntactically adjacent. Accepts the catastrophic-devices list negated so
+  // `echo /dev/null | dd …` stays out. A residual false-positive class
+  // exists (e.g. a comment like `# saw /dev/sda once` next to an unrelated
+  // `dd if=/tmp/foo`), but for catastrophic ops we prefer false positives
+  // over silent bypasses — a prompted human resolves it in one tap.
+  {
+    // dd/mkfs BEFORE /dev/<unsafe>
+    regex: /\b(?:dd|mkfs(?:\.[a-z0-9]+)?)\b[^\n]*?\/dev\/(?!(?:null|zero|stdin|stdout|stderr|tty|full|random|urandom)\b)[a-z]/i,
+    reason: 'dd/mkfs co-located with /dev/* (possible shell-var indirection)',
+  },
+  {
+    // /dev/<unsafe> BEFORE dd/mkfs — covers variable-assignment-then-use
+    // (`T=/dev/sda; dd of=$T`) and `bash -c` payloads where the unsafe path
+    // precedes the destructive token.
+    regex: /\/dev\/(?!(?:null|zero|stdin|stdout|stderr|tty|full|random|urandom)\b)[a-z][^\n]*?\b(?:dd|mkfs(?:\.[a-z0-9]+)?)\b/i,
+    reason: 'dd/mkfs co-located with /dev/* (possible shell-var indirection)',
   },
 
   // Classic bash fork bomb — no legitimate use. Tolerates whitespace

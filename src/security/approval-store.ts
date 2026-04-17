@@ -101,7 +101,7 @@ interface PendingEntry {
 export class ApprovalStore {
   private permanentStore?: PermanentStore;
   private readonly onError: ErrorLogger;
-  private readonly timeoutMs?: number;
+  private timeoutMs?: number;
   // -----------------------------------------------------------------------
   // Per-session state
   // -----------------------------------------------------------------------
@@ -516,6 +516,16 @@ export class ApprovalStore {
     else this.sessionYolo.delete(sessionKey);
   }
 
+  /**
+   * Runtime override for the fail-closed timeout. Used by production wiring
+   * to set a sensible default on the module-level singleton after import
+   * time (or to disable by passing `undefined`). Affects only approvals
+   * queued after the call — in-flight entries keep their original timer.
+   */
+  setTimeoutMs(ms: number | undefined): void {
+    this.timeoutMs = ms;
+  }
+
   isYolo(sessionKey: string): boolean {
     return this.sessionYolo.has(sessionKey);
   }
@@ -542,8 +552,29 @@ export class ApprovalStore {
 }
 
 /**
+ * Build a session key for the approval store from (botName, chatId).
+ *
+ * Codex R4 M1: the store is a process-global singleton shared by all
+ * configured bots. Keying purely by `chatId` lets two bots that happen to
+ * share the same chat-id string cross-contaminate YOLO state, the session
+ * allowlist, and the pending-approval queue — e.g. `/yolo on` in bot A
+ * would auto-approve dangerous commands in bot B. The `\x00` NUL separator
+ * is load-bearing: a bot name containing `:` ("my:bot") or a chat-id
+ * containing `:` would otherwise collide with a differently-split pair
+ * that produces the same concatenation.
+ */
+export function buildSessionKey(botName: string, chatId: string): string {
+  return `${botName}\x00${chatId}`;
+}
+
+/**
  * Process-wide singleton, matching Hermes's module-level state. Tests that
  * need isolation should instantiate `new ApprovalStore()` directly rather
  * than using this export.
+ *
+ * Codex R4 M3: default `timeoutMs` set to 10 minutes so a user who walks
+ * away from a pending card doesn't hang the agent indefinitely. Production
+ * wiring can override at any time via `setTimeoutMs()`. Tests construct
+ * their own `new ApprovalStore(...)` and aren't affected.
  */
-export const approvalStore = new ApprovalStore();
+export const approvalStore = new ApprovalStore({ timeoutMs: 10 * 60 * 1000 });

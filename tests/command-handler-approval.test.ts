@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CommandHandler } from '../src/bridge/command-handler.js';
-import { approvalStore } from '../src/security/approval-store.js';
+import { approvalStore, buildSessionKey } from '../src/security/approval-store.js';
 import type { ApprovalBridge } from '../src/security/approval-bridge.js';
 import type { IMessageSender } from '../src/bridge/message-sender.interface.js';
 import type { BotConfigBase } from '../src/config.js';
@@ -22,6 +22,7 @@ import type { Logger } from '../src/utils/logger.js';
 
 const CHAT = 'chat_X';
 const USER = 'user_X';
+const SESSION_KEY = buildSessionKey('testbot', CHAT);
 
 interface SentNotice {
   chatId: string;
@@ -80,7 +81,7 @@ function msg(text: string) {
 
 describe('CommandHandler — /approve with scope', () => {
   beforeEach(() => {
-    approvalStore.clearSession(CHAT);
+    approvalStore.clearSession(SESSION_KEY);
   });
 
   it('/approve (no arg) routes as "once"', async () => {
@@ -89,7 +90,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/approve'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'once', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'once', USER);
   });
 
   it('/approve once (explicit) routes as "once"', async () => {
@@ -98,7 +99,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/approve once'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'once', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'once', USER);
   });
 
   it('/approve session routes as "session"', async () => {
@@ -107,7 +108,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/approve session'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'session', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'session', USER);
   });
 
   it('/approve always routes as "always"', async () => {
@@ -116,7 +117,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/approve always'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'always', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'always', USER);
   });
 
   it('/approve ALWAYS is case-insensitive', async () => {
@@ -125,7 +126,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/approve ALWAYS'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'always', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'always', USER);
   });
 
   it('/approve bogus rejects with an error notice and does NOT call bridge', async () => {
@@ -145,7 +146,7 @@ describe('CommandHandler — /approve with scope', () => {
     const { handler } = makeHandler({ bridge });
 
     await handler.handle(msg('/deny'));
-    expect(resolveNextByText).toHaveBeenCalledWith(CHAT, 'deny', USER);
+    expect(resolveNextByText).toHaveBeenCalledWith(SESSION_KEY, 'deny', USER);
   });
 
   it('/approve with no pending approval surfaces a notice', async () => {
@@ -160,7 +161,7 @@ describe('CommandHandler — /approve with scope', () => {
 
 describe('CommandHandler — /approvals (list)', () => {
   beforeEach(() => {
-    approvalStore.clearSession(CHAT);
+    approvalStore.clearSession(SESSION_KEY);
     // Drain any permanent entries from prior tests (module-level singleton).
     for (const k of approvalStore.getPermanentApprovals()) {
       approvalStore.revokePermanent(k);
@@ -178,8 +179,8 @@ describe('CommandHandler — /approvals (list)', () => {
   });
 
   it('lists session + permanent entries with counts', async () => {
-    approvalStore.approveForSession(CHAT, 'session-pattern-1');
-    approvalStore.approveForSession(CHAT, 'session-pattern-2');
+    approvalStore.approveForSession(SESSION_KEY, 'session-pattern-1');
+    approvalStore.approveForSession(SESSION_KEY, 'session-pattern-2');
     approvalStore.approvePermanent('permanent-pattern-A');
 
     const { handler, sent } = makeHandler();
@@ -193,20 +194,21 @@ describe('CommandHandler — /approvals (list)', () => {
   });
 
   it('reflects YOLO mode when enabled', async () => {
-    approvalStore.setYolo(CHAT, true);
+    approvalStore.setYolo(SESSION_KEY, true);
     const { handler, sent } = makeHandler();
     await handler.handle(msg('/approvals'));
     expect(sent.at(-1)?.body).toMatch(/YOLO Mode.*on/);
-    approvalStore.setYolo(CHAT, false);
+    approvalStore.setYolo(SESSION_KEY, false);
   });
 
   it('scopes session allowlist to the current chat only', async () => {
-    approvalStore.approveForSession('other_chat', 'other-session-pattern');
+    const OTHER_KEY = buildSessionKey('testbot', 'other_chat');
+    approvalStore.approveForSession(OTHER_KEY, 'other-session-pattern');
     const { handler, sent } = makeHandler();
     await handler.handle(msg('/approvals'));
     const body = sent.at(-1)?.body ?? '';
     expect(body).not.toContain('other-session-pattern');
-    approvalStore.clearSession('other_chat');
+    approvalStore.clearSession(OTHER_KEY);
   });
 });
 
