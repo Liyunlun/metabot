@@ -71,7 +71,7 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     const [, cardJson] = sender.sendCard.mock.calls[0] as [string, string];
     const card = JSON.parse(cardJson);
     // Find the approvalId from the button value for the click we're about to simulate.
-    const action = card.body.elements.find((e: any) => e.tag === 'action');
+    const action = card.elements.find((e: any) => e.tag === 'action');
     const oneBtn = action.actions.find((b: any) => b.value.choice === 'once');
     expect(oneBtn.value.kind).toBe(APPROVAL_BUTTON_KIND);
 
@@ -98,7 +98,7 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     await Promise.resolve();
 
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const denyBtn = card.body.elements
+    const denyBtn = card.elements
       .find((e: any) => e.tag === 'action')
       .actions.find((b: any) => b.value.choice === 'deny');
     bridge.handleButtonClick(denyBtn.value, 'user_xyz');
@@ -125,7 +125,7 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     await Promise.resolve();
     await Promise.resolve();
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const btn = card.body.elements.find((e: any) => e.tag === 'action').actions[0].value;
+    const btn = card.elements.find((e: any) => e.tag === 'action').actions[0].value;
 
     bridge.handleButtonClick(btn);
     bridge.handleButtonClick(btn); // duplicate
@@ -223,7 +223,7 @@ describe('ApprovalBridge — failure & detach semantics', () => {
     await Promise.resolve();
     await Promise.resolve();
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const btn = card.body.elements.find((e: any) => e.tag === 'action').actions[0].value;
+    const btn = card.elements.find((e: any) => e.tag === 'action').actions[0].value;
 
     // Fire timeout — store resolves as deny, bridge observer updates the card.
     vi.advanceTimersByTime(5_000);
@@ -302,7 +302,7 @@ describe('ApprovalBridge — card send vs resolve race (Codex R3 P2)', () => {
     // messageId === undefined so it can't updateCard yet — it must stash.
     const cardJson = sender.sendCard.mock.calls[0][1] as string;
     const card = JSON.parse(cardJson);
-    const oneBtn = card.body.elements
+    const oneBtn = card.elements
       .find((e: any) => e.tag === 'action')
       .actions.find((b: any) => b.value.choice === 'once');
     bridge.handleButtonClick(oneBtn.value, 'user_fast');
@@ -408,7 +408,7 @@ describe('ApprovalBridge — card send vs resolve race (Codex R3 P2)', () => {
 
     // User clicks once while send still in flight.
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const oneBtn = card.body.elements
+    const oneBtn = card.elements
       .find((e: any) => e.tag === 'action')
       .actions.find((b: any) => b.value.choice === 'once');
     bridge.handleButtonClick(oneBtn.value);

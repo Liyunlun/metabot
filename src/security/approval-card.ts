@@ -56,43 +56,40 @@ export function buildPendingApprovalCard(input: PendingApprovalCardInput): strin
   const cmdPreview = previewCommand(request.command);
 
   const card = {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: '⚠️ 危险命令需要确认' },
       template: 'orange',
     },
-    body: {
-      elements: [
-        {
-          tag: 'markdown',
-          content:
-            `**匹配规则：** ${request.description}\n\n` +
-            `**命令：**\n\`\`\`bash\n${escapeBackticks(cmdPreview)}\n\`\`\``,
-        },
-        { tag: 'hr' },
-        {
-          tag: 'action',
-          layout: 'flow',
-          actions: BUTTON_SPEC.map(({ choice, label, type }) => ({
-            tag: 'button',
-            text: { tag: 'plain_text', content: label },
-            type,
-            value: {
-              kind: APPROVAL_BUTTON_KIND,
-              approvalId,
-              choice,
-            },
-          })),
-        },
-        {
-          tag: 'markdown',
-          content:
-            '_一次（Once）：仅本次放行_ · _本会话（Session）：匹配同一规则不再弹窗_ · ' +
-            '_永久（Always）：跨会话保存_ · _拒绝（Deny）：阻断执行_',
-        },
-      ],
-    },
+    elements: [
+      {
+        tag: 'markdown',
+        content:
+          `**匹配规则：** ${request.description}\n\n` +
+          `**命令：**\n\`\`\`bash\n${escapeBackticks(cmdPreview)}\n\`\`\``,
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        layout: 'flow',
+        actions: BUTTON_SPEC.map(({ choice, label, type }) => ({
+          tag: 'button',
+          text: { tag: 'plain_text', content: label },
+          type,
+          value: {
+            kind: APPROVAL_BUTTON_KIND,
+            approvalId,
+            choice,
+          },
+        })),
+      },
+      {
+        tag: 'markdown',
+        content:
+          '_一次（Once）：仅本次放行_ · _本会话（Session）：匹配同一规则不再弹窗_ · ' +
+          '_永久（Always）：跨会话保存_ · _拒绝（Deny）：阻断执行_',
+      },
+    ],
   };
   return JSON.stringify(card);
 }
@@ -141,24 +138,21 @@ export function buildResolvedApprovalCard(input: ResolvedApprovalCardInput): str
   ].filter(Boolean);
 
   const card = {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: title },
       template,
     },
-    body: {
-      elements: [
-        {
-          tag: 'markdown',
-          content:
-            `**匹配规则：** ${request.description}\n\n` +
-            `**命令：**\n\`\`\`bash\n${escapeBackticks(cmdPreview)}\n\`\`\``,
-        },
-        { tag: 'hr' },
-        { tag: 'markdown', content: footerLines.join('\n') },
-      ],
-    },
+    elements: [
+      {
+        tag: 'markdown',
+        content:
+          `**匹配规则：** ${request.description}\n\n` +
+          `**命令：**\n\`\`\`bash\n${escapeBackticks(cmdPreview)}\n\`\`\``,
+      },
+      { tag: 'hr' },
+      { tag: 'markdown', content: footerLines.join('\n') },
+    ],
   };
   return JSON.stringify(card);
 }

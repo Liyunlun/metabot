@@ -30,7 +30,7 @@ describe('buildPendingApprovalCard', () => {
 
   it('emits exactly 4 buttons in choice order: once, session, always, deny', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
-    const action = card.body.elements.find((e: any) => e.tag === 'action');
+    const action = card.elements.find((e: any) => e.tag === 'action');
     expect(action).toBeTruthy();
     expect(action.actions).toHaveLength(4);
     expect(action.actions.map((b: any) => b.value.choice)).toEqual([
@@ -43,7 +43,7 @@ describe('buildPendingApprovalCard', () => {
 
   it('each button carries the APPROVAL_BUTTON_KIND tag + approvalId', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_42', request: REQ }));
-    const action = card.body.elements.find((e: any) => e.tag === 'action');
+    const action = card.elements.find((e: any) => e.tag === 'action');
     for (const btn of action.actions) {
       expect(btn.value.kind).toBe(APPROVAL_BUTTON_KIND);
       expect(btn.value.approvalId).toBe('a_42');
@@ -52,7 +52,7 @@ describe('buildPendingApprovalCard', () => {
 
   it('deny button uses "danger" style, others use "primary"', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
-    const action = card.body.elements.find((e: any) => e.tag === 'action');
+    const action = card.elements.find((e: any) => e.tag === 'action');
     const denyBtn = action.actions.find((b: any) => b.value.choice === 'deny');
     const onceBtn = action.actions.find((b: any) => b.value.choice === 'once');
     expect(denyBtn.type).toBe('danger');
@@ -121,7 +121,7 @@ describe('buildResolvedApprovalCard', () => {
     const card = parseCard(
       buildResolvedApprovalCard({ approvalId: 'a_1', request: REQ, choice: 'once' }),
     );
-    const action = card.body.elements.find((e: any) => e.tag === 'action');
+    const action = card.elements.find((e: any) => e.tag === 'action');
     expect(action).toBeUndefined();
   });
 });
