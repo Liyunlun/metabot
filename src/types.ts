@@ -20,6 +20,15 @@ export interface PendingQuestion {
   }>;
 }
 
+/** A question the user has already answered — kept visible on the live card so the Q&A history isn't lost when Claude's stream resumes. */
+export interface AnsweredQuestion {
+  header: string;
+  question: string;
+  answer: string;
+  /** Options that were available when the question was asked, so the Q&A history retains the full choice context. */
+  options?: Array<{ label: string; description: string }>;
+}
+
 export interface SubagentTask {
   taskId: string;
   description: string;
@@ -44,6 +53,8 @@ export interface CardState {
   errorMessage?: string;
   retryInfo?: string;
   pendingQuestion?: PendingQuestion;
+  /** Questions already answered in the current turn — shown on the live card so the user can see what they replied after Claude resumes streaming. Cleared on turn recreate (previous Q&A is frozen into the Turn card). */
+  answeredQuestions?: AnsweredQuestion[];
   /** Primary model used (e.g. "claude-opus-4-7") */
   model?: string;
   thinking?: string;
