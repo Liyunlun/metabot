@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { ApprovalStore } from '../src/security/approval-store.js';
+import { PermanentApprovalStore } from '../src/security/permanent-approval-store.js';
 import {
   createApprovalHandler,
   type ApprovalAuditSink,
@@ -427,5 +431,99 @@ describe('createApprovalHandler — classifier absent', () => {
     const paths = audit.log.mock.calls.map((c: unknown[]) => (c[0] as { meta?: { path?: string } }).meta?.path);
     expect(paths).toContain('escalated');
     expect(paths).toContain('user_approved');
+  });
+});
+
+describe('createApprovalHandler — tampered approvals.json persistence', () => {
+  // Codex R2 coverage gap #3: Phase 5 introduced a new ingress (the persisted
+  // file at ~/.metabot/approvals.json). A user could hand-edit this file to
+  // inject a pattern key. End-to-end test: even if the file contains the
+  // patternKey shared by `rm -rf /` and `rm -rf /tmp/foo`, the hard blacklist
+  // must still force a prompt for `rm -rf /`.
+
+  function tmpFile(): string {
+    return path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'metabot-tamper-test-')),
+      'approvals.json',
+    );
+  }
+
+  it('SECURITY: hand-edited approvals.json cannot bypass the hard blacklist', async () => {
+    const filePath = tmpFile();
+    // Attacker/curious-user scenario: write a tampered allowlist containing
+    // the exact `patternKey` that `rm -rf /` maps to.
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        patterns: ['delete in root path'],
+        updatedAt: new Date().toISOString(),
+      }),
+      { mode: 0o600 },
+    );
+
+    const store = new ApprovalStore();
+    await store.attachPermanentStore(new PermanentApprovalStore({ filePath }));
+    // Sanity: the tampered entry DID load into memory.
+    expect(store.getPermanentApprovals()).toEqual(['delete in root path']);
+
+    // User clicks deny so the handler returns a concrete verdict.
+    store.registerNotify(CHAT, (id) => {
+      queueMicrotask(() => store.resolveById(id, 'deny'));
+    });
+
+    const audit = makeAudit();
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: classifier('approve'), // must NOT be consulted.
+      cardPromptAvailable: true,
+      audit,
+      logger: makeLogger(),
+    });
+
+    await expect(handler('rm -rf /')).resolves.toBe('deny');
+
+    const paths = audit.log.mock.calls.map(
+      (c: unknown[]) => (c[0] as { meta?: { path?: string } }).meta?.path,
+    );
+    // Critical assertions — the persisted allowlist entry did NOT short-circuit.
+    expect(paths).not.toContain('allowlist_hit');
+    expect(paths).not.toContain('smart_approved');
+    expect(paths).toContain('hard_blacklist_prompted');
+    expect(paths).toContain('user_denied');
+  });
+
+  it('SECURITY: tampered allowlist still auto-allows non-blacklisted variants (baseline)', async () => {
+    // Complement to the previous test: the tampered allowlist DOES apply to
+    // non-hard-blacklisted commands that share the same patternKey. This
+    // confirms the hard-blacklist short-circuit is doing the work, not some
+    // other gate accidentally blocking the allowlist path entirely.
+    const filePath = tmpFile();
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ version: 1, patterns: ['delete in root path'] }),
+      { mode: 0o600 },
+    );
+    const store = new ApprovalStore();
+    await store.attachPermanentStore(new PermanentApprovalStore({ filePath }));
+
+    const audit = makeAudit();
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: classifier('deny'), // would deny if reached.
+      cardPromptAvailable: true,
+      audit,
+      logger: makeLogger(),
+    });
+
+    // `rm -rf /tmp/foo` shares the patternKey but is NOT hard-blacklisted.
+    await expect(handler('rm -rf /tmp/foo')).resolves.toBe('allow');
+    expect(audit.log.mock.calls[0][0].meta?.path).toBe('allowlist_hit');
   });
 });
