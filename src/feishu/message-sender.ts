@@ -64,7 +64,7 @@ export class MessageSender {
     }
   }
 
-  async updateCard(messageId: string, cardContent: string): Promise<void> {
+  async updateCard(messageId: string, cardContent: string): Promise<boolean> {
     // Safe to retry: message.patch on a fixed message_id is idempotent.
     try {
       await this.withRetry('updateCard', () =>
@@ -73,8 +73,10 @@ export class MessageSender {
           data: { content: cardContent },
         }),
       );
+      return true;
     } catch (err) {
       this.logger.error({ err, messageId }, 'Failed to update card');
+      return false;
     }
   }
 

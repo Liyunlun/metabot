@@ -1626,15 +1626,16 @@ export class MessageBridge {
         cardTitle: `Turn ${turnCount}`,
       };
       let frozen = false;
+      // updateCard is no-throw + boolean on transport failure; defensive catch
+      // guards against unexpected throws (e.g. test mocks).
       try {
-        await this.sender.updateCard(messageId, freezeState);
-        frozen = true;
-      } catch {
+        frozen = await this.sender.updateCard(messageId, freezeState);
+      } catch { /* fall through to retry */ }
+      if (!frozen) {
         await new Promise((r) => setTimeout(r, 1000));
         try {
-          await this.sender.updateCard(messageId, freezeState);
-          frozen = true;
-        } catch { /* will retry in background */ }
+          frozen = await this.sender.updateCard(messageId, freezeState);
+        } catch { /* fall through to background retry */ }
       }
       if (!frozen) {
         this.backgroundFreezeRetry(messageId, freezeState);
@@ -1666,22 +1667,23 @@ export class MessageBridge {
       }
     } else {
       // Single-turn / no-split path: update the existing card in place.
+      // updateCard signals failure via return value (no-throw contract),
+      // so we must check it — otherwise the text fallback below could
+      // never fire on real Feishu outages.
       const displayText = lastTurnText || state.responseText || '_See cards above for full response_';
       const cardState = { ...state, responseText: displayText, cardTitle: '📊 Result' };
       for (let attempt = 0; attempt < FINAL_CARD_RETRIES; attempt++) {
+        let ok = false;
         try {
-          await this.sender.updateCard(messageId, cardState);
-          if (attempt > 0) {
-            await new Promise((r) => setTimeout(r, FINAL_CARD_BASE_DELAY_MS));
-            await this.sender.updateCard(messageId, cardState);
-          }
+          ok = await this.sender.updateCard(messageId, cardState);
+        } catch { /* treat as failure */ }
+        if (ok) {
           succeeded = true;
           break;
-        } catch {
-          const delay = FINAL_CARD_BASE_DELAY_MS * Math.pow(2, attempt);
-          this.logger.warn({ attempt, delay, messageId }, 'Final card update failed, retrying');
-          await new Promise((r) => setTimeout(r, delay));
         }
+        const delay = FINAL_CARD_BASE_DELAY_MS * Math.pow(2, attempt);
+        this.logger.warn({ attempt, delay, messageId }, 'Final card update failed, retrying');
+        await new Promise((r) => setTimeout(r, delay));
       }
       if (succeeded && state.resultSummary && chatId) {
         // For single-turn, send the SDK summary as a follow-up message.
@@ -1731,17 +1733,18 @@ export class MessageBridge {
     // Freeze old card with the completed turn's content so the card itself shows the response.
     const freezeState = { ...state, status: 'complete' as const, responseText: turnText || '', cardTitle: turnLabel };
     let frozen = false;
+    // updateCard's contract is no-throw + boolean return on transport failure,
+    // but we also defend against unexpected throws (e.g. mocks in tests).
     try {
-      await this.sender.updateCard(oldMessageId, freezeState);
-      frozen = true;
-    } catch (err) {
-      // Retry once before creating the new card
+      frozen = await this.sender.updateCard(oldMessageId, freezeState);
+    } catch { /* treat as failure, retry below */ }
+    if (!frozen) {
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        await this.sender.updateCard(oldMessageId, freezeState);
-        frozen = true;
-      } catch (err2) {
-        this.logger.warn({ oldMessageId, err: (err2 as Error).message }, 'recreateCard freeze failed after retry, will retry in background');
+        frozen = await this.sender.updateCard(oldMessageId, freezeState);
+      } catch { /* treat as failure, fall through to background retry */ }
+      if (!frozen) {
+        this.logger.warn({ oldMessageId }, 'recreateCard freeze failed after retry, will retry in background');
       }
     }
     // Create new card at bottom for next turn
@@ -1772,13 +1775,17 @@ export class MessageBridge {
         return;
       }
       setTimeout(async () => {
+        // updateCard is no-throw + boolean on failure; defensive catch for mocks.
+        let ok = false;
         try {
-          await this.sender.updateCard(messageId, freezeState);
+          ok = await this.sender.updateCard(messageId, freezeState);
+        } catch { /* treat as failure */ }
+        if (ok) {
           this.logger.info({ messageId, attempt }, 'Background freeze succeeded');
-        } catch {
-          attempt++;
-          retry();
+          return;
         }
+        attempt++;
+        retry();
       }, delays[attempt]);
     };
     retry();
@@ -1874,7 +1881,7 @@ export class MessageBridge {
       clearTimeout(batch.timerId);
     }
     this.pendingBatches.clear();
-    const updatePromises: Promise<void>[] = [];
+    const updatePromises: Promise<unknown>[] = [];
     for (const [chatId, task] of this.runningTasks) {
       if (task.questionTimeoutId) {
         clearTimeout(task.questionTimeoutId);
