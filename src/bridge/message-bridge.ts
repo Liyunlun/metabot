@@ -20,6 +20,7 @@ import { metrics } from '../utils/metrics.js';
 import { splitResponseText } from '../feishu/card-builder.js';
 import type { SessionRegistry } from '../session/session-registry.js';
 import { approvalStore } from '../security/approval-store.js';
+import { PermanentApprovalStore } from '../security/permanent-approval-store.js';
 import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
 import { SmartApprovalClassifier } from '../security/smart-approval.js';
 import { createApprovalHandler } from '../security/approval-handler.js';
@@ -199,6 +200,19 @@ export class MessageBridge {
       this.approvalBridge = new ApprovalBridge(approvalStore, cardSender, logger);
       this.commandHandler.setApprovalBridge(this.approvalBridge);
     }
+
+    // Phase 5 — permanent allowlist persistence. Wire the file-backed
+    // store so `/approve always` decisions survive bot restarts. Awaited
+    // lazily (not blocking the constructor); the first prompt after boot
+    // may race the initial load, but `approvePermanent()` writes through
+    // immediately so the subsequent startup will see it.
+    void approvalStore
+      .attachPermanentStore(
+        new PermanentApprovalStore({
+          onError: (msg, err) => logger.warn({ err }, `[approval] ${msg}`),
+        }),
+      )
+      .catch((err) => logger.warn({ err }, '[approval] initial permanent-store load failed'));
   }
 
   /** Emit an activity event if a listener is registered. */

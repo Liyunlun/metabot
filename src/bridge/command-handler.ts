@@ -61,8 +61,11 @@ export class CommandHandler {
           '`/memory` - Memory document commands',
           '`/model [opus|sonnet|haiku]` - View or switch Claude model',
           '`/effort [low|medium|high|max]` - View or switch effort level',
-          '`/approve` / `/deny` - Resolve the oldest pending dangerous-command approval',
+          '`/approve [session|always]` - Approve oldest pending command (once/session/permanent)',
+          '`/deny` - Reject oldest pending command',
           '`/yolo [on|off]` - Auto-approve dangerous commands (use carefully)',
+          '`/approvals` - List current session + permanent allowlist',
+          '`/revoke <pattern>` - Remove a pattern from the permanent allowlist',
           '`/help` - Show this help message',
           '',
           '**Usage:**',
@@ -156,16 +159,110 @@ export class CommandHandler {
       case '/approve':
       case '/deny': {
         // Resolve the oldest pending dangerous-command approval in this chat.
-        // `/approve` maps to a one-shot 'once' allow; users that want session
-        // or permanent allow should click the corresponding card button.
+        // `/approve` defaults to a one-shot 'once' allow; `/approve session`
+        // adds to the session allowlist; `/approve always` adds to the
+        // permanent allowlist (persisted across restarts via Phase 5).
         if (!this.approvalBridge) {
           await this.sender.sendTextNotice(chatId, 'ℹ️ Not Available', 'Approval commands are not supported on this platform.', 'blue');
           return true;
         }
-        const choice = cmd.toLowerCase() === '/approve' ? 'once' : 'deny';
-        const resolved = this.approvalBridge.resolveNextByText(chatId, choice as 'once' | 'deny', userId);
+        let choice: 'once' | 'session' | 'always' | 'deny';
+        if (cmd.toLowerCase() === '/deny') {
+          choice = 'deny';
+        } else {
+          // Parse optional scope: `/approve`, `/approve session`, `/approve always`.
+          const arg = text.slice('/approve'.length).trim().toLowerCase();
+          if (arg === '' || arg === 'once') {
+            choice = 'once';
+          } else if (arg === 'session' || arg === 'always') {
+            choice = arg;
+          } else {
+            await this.sender.sendTextNotice(
+              chatId,
+              '❌ Invalid Scope',
+              `\`${arg}\` is not valid. Use: \`/approve\` (once), \`/approve session\`, or \`/approve always\`.`,
+              'red',
+            );
+            return true;
+          }
+        }
+        const resolved = this.approvalBridge.resolveNextByText(chatId, choice, userId);
         if (resolved === 0) {
           await this.sender.sendTextNotice(chatId, 'ℹ️ No Pending Approval', 'There is no dangerous-command approval waiting in this chat.', 'blue');
+        }
+        return true;
+      }
+
+      case '/approvals': {
+        // List the current approval state for this chat: session allowlist,
+        // permanent allowlist, and YOLO status. Intentionally does NOT show
+        // other chats' session approvals — each chat is its own session.
+        const sessionKeys = approvalStore.getSessionApprovals(chatId);
+        const permanentKeys = approvalStore.getPermanentApprovals();
+        const yolo = approvalStore.isYolo(chatId);
+        const lines: string[] = [];
+        lines.push(`**YOLO Mode:** ${yolo ? '🤠 on' : 'off'}`);
+        lines.push('');
+        lines.push(`**Session allowlist** (${sessionKeys.length}):`);
+        if (sessionKeys.length === 0) {
+          lines.push('_None_');
+        } else {
+          for (const k of sessionKeys) lines.push(`- \`${k}\``);
+        }
+        lines.push('');
+        lines.push(`**Permanent allowlist** (${permanentKeys.length}):`);
+        if (permanentKeys.length === 0) {
+          lines.push('_None_');
+        } else {
+          for (const k of permanentKeys) lines.push(`- \`${k}\``);
+        }
+        lines.push('');
+        lines.push('_Use `/revoke <pattern>` to remove a permanent entry._');
+        await this.sender.sendTextNotice(chatId, '🛡 Approvals', lines.join('\n'), 'blue');
+        return true;
+      }
+
+      case '/revoke': {
+        // Remove a pattern from the permanent allowlist. The session
+        // allowlist is per-chat ephemeral state cleared by /reset, so we
+        // don't expose a revoke for it — restart the session instead.
+        const pattern = text.slice('/revoke'.length).trim();
+        if (!pattern) {
+          const all = approvalStore.getPermanentApprovals();
+          if (all.length === 0) {
+            await this.sender.sendTextNotice(
+              chatId,
+              '🛡 Revoke',
+              'Usage: `/revoke <pattern>`\n\n_Permanent allowlist is empty._',
+              'blue',
+            );
+          } else {
+            const list = all.map((k) => `- \`${k}\``).join('\n');
+            await this.sender.sendTextNotice(
+              chatId,
+              '🛡 Revoke',
+              `Usage: \`/revoke <pattern>\`\n\n**Current permanent allowlist:**\n${list}`,
+              'blue',
+            );
+          }
+          return true;
+        }
+        const removed = approvalStore.revokePermanent(pattern);
+        if (removed) {
+          this.audit.log({ event: 'approval_revoked', botName: this.config.name, chatId, userId, prompt: pattern });
+          await this.sender.sendTextNotice(
+            chatId,
+            '✅ Revoked',
+            `\`${pattern}\` removed from the permanent allowlist.`,
+            'green',
+          );
+        } else {
+          await this.sender.sendTextNotice(
+            chatId,
+            'ℹ️ Not Found',
+            `\`${pattern}\` is not in the permanent allowlist. Use \`/approvals\` to see current entries.`,
+            'blue',
+          );
         }
         return true;
       }

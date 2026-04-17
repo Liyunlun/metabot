@@ -99,7 +99,7 @@ interface PendingEntry {
 }
 
 export class ApprovalStore {
-  private readonly permanentStore?: PermanentStore;
+  private permanentStore?: PermanentStore;
   private readonly onError: ErrorLogger;
   private readonly timeoutMs?: number;
   // -----------------------------------------------------------------------
@@ -157,6 +157,20 @@ export class ApprovalStore {
     const keys = await this.permanentStore.load();
     this.permanentApproved.clear();
     for (const k of keys) this.permanentApproved.add(k);
+  }
+
+  /**
+   * Attach a persistence hook to the singleton after construction and
+   * immediately hydrate the permanent allowlist from it. Used by the bridge
+   * at bot startup — the module-level singleton is created with no store,
+   * and we wire in the real file-backed implementation once we have a
+   * logger available.
+   *
+   * Calling this a second time replaces the previous store and re-loads.
+   */
+  async attachPermanentStore(store: PermanentStore): Promise<void> {
+    this.permanentStore = store;
+    await this.loadPermanent();
   }
 
   private async savePermanent(): Promise<void> {

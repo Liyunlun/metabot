@@ -12,7 +12,8 @@ export type AuditEvent =
   | 'auth_denied'
   | 'api_task_start'
   | 'api_task_complete'
-  | 'approval_decision';
+  | 'approval_decision'
+  | 'approval_revoked';
 
 export interface AuditEntry {
   event: AuditEvent;
