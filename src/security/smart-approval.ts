@@ -31,6 +31,9 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { CommandExplanation } from './approval-store.js';
+
+export type { CommandExplanation };
 
 export type SmartVerdict = 'approve' | 'deny' | 'escalate';
 
@@ -59,6 +62,13 @@ export interface SmartApprovalResult {
   latencyMs: number;
   /** Raw response text (truncated), useful for debugging; omitted on timeout. */
   raw?: string;
+  /**
+   * LLM-generated explanation for the approval card. Populated when the
+   * classifier returned parseable JSON including the explanation fields;
+   * absent when the model responded with a bare verdict word or when
+   * parsing failed. Consumers render it only if present.
+   */
+  explanation?: CommandExplanation;
 }
 
 /** Minimal logger contract — matches pino's `info/warn/error(obj, msg)` shape. */
@@ -72,8 +82,13 @@ export interface Logger {
  * Build the classifier prompt. Exported for testing; callers should use
  * `classify()` which wires this into the SDK.
  *
- * Prompt is Hermes `tools/approval.py:552-564` verbatim, with an extra
- * `Working directory: {cwd}` line inserted after `Flagged reason:`.
+ * Prompt is Hermes `tools/approval.py:552-564` with two MetaBot additions:
+ *   1. `Working directory: {cwd}` line — disambiguation signal.
+ *   2. Structured JSON output with `verdict` + operator-facing explanation
+ *      fields (`summary`, `risks`, `reversible`) — the card uses these to
+ *      tell the user *what* the command does and *why* it's risky before
+ *      they click. The parser falls back to a bare-word verdict when JSON
+ *      parsing fails (any older model or malformed output stays safe).
  */
 export function buildClassifierPrompt(req: SmartApprovalRequest): string {
   return [
@@ -85,12 +100,56 @@ export function buildClassifierPrompt(req: SmartApprovalRequest): string {
     '',
     'Assess the ACTUAL risk of this command. Many flagged commands are false positives — for example, `python -c "print(\'hello\')"` is flagged as "script execution via -c flag" but is completely harmless.',
     '',
-    'Rules:',
+    'Rules for "verdict" (valid values: APPROVE, DENY, or ESCALATE):',
     '- APPROVE if the command is clearly safe (benign script execution, safe file operations, development tools, package installs, git operations, etc.)',
     '- DENY if the command could genuinely damage the system (recursive delete of important paths, overwriting system files, fork bombs, wiping disks, dropping databases, etc.)',
     '- ESCALATE if you\'re uncertain',
     '',
-    'Respond with exactly one word: APPROVE, DENY, or ESCALATE',
+    'Also produce a short operator-facing explanation so a human can decide quickly if they see a prompt. Respond with a single JSON object of exactly this shape:',
+    '{',
+    '  "verdict": "APPROVE" | "DENY" | "ESCALATE",',
+    '  "summary": "<one-sentence Chinese description of what this command does>",',
+    '  "risks": ["<specific risk in Chinese>", "..."],',
+    '  "reversible": "yes" | "no" | "partial" | "unknown"',
+    '}',
+    '',
+    'Rules for explanation fields:',
+    '- "summary": plain, non-alarmist; describe the action, not the risk.',
+    '- "risks": 0–3 concrete consequences (empty array if APPROVE).',
+    '- "reversible": "yes" if a mistake is trivially undone, "no" if the effect is irreversible (deleted data, overwritten system files, dropped DB), "partial" if recoverable but costly, "unknown" if context-dependent.',
+    '',
+    'Output ONLY the JSON object, no surrounding prose.',
+  ].join('\n');
+}
+
+/**
+ * Build the explain-only prompt used for hard-blacklisted commands — those
+ * always reach the user card regardless of verdict, so we skip the verdict
+ * field and just ask for the operator-facing explanation. Saves a bit of
+ * generation length and removes any risk of the LLM's verdict coloring the
+ * card copy for commands we have already decided require human review.
+ */
+export function buildExplainPrompt(req: SmartApprovalRequest): string {
+  return [
+    'You are a security reviewer preparing an explanation for a human operator who must decide whether to allow a terminal command. The command has already been flagged and will be shown to the operator; do not recommend approval or denial — only describe the command and its risks.',
+    '',
+    `Command: ${req.command}`,
+    `Flagged reason: ${req.description}`,
+    `Working directory: ${req.cwd}`,
+    '',
+    'Respond with a single JSON object of exactly this shape:',
+    '{',
+    '  "summary": "<one-sentence Chinese description of what this command does>",',
+    '  "risks": ["<specific risk in Chinese>", "..."],',
+    '  "reversible": "yes" | "no" | "partial" | "unknown"',
+    '}',
+    '',
+    'Rules:',
+    '- "summary": plain, non-alarmist; describe the action, not the risk.',
+    '- "risks": 1–3 concrete consequences.',
+    '- "reversible": "yes" if trivially undone, "no" if irreversible, "partial" if recoverable but costly, "unknown" if context-dependent.',
+    '',
+    'Output ONLY the JSON object, no surrounding prose.',
   ].join('\n');
 }
 
@@ -119,6 +178,87 @@ export function parseVerdict(response: string): SmartVerdict {
   if (hasApprove) return 'approve';
   if (hasDeny) return 'deny';
   return 'escalate';
+}
+
+/**
+ * Extract a balanced `{ ... }` JSON object from the response text. Looks for
+ * the outermost braces; tolerates surrounding prose (some models add stray
+ * prefixes like "Here's my analysis:" despite the "Output ONLY the JSON"
+ * instruction). Returns the raw JSON string or `undefined` if none found.
+ */
+function extractJsonObject(text: string): string | undefined {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return undefined;
+  return text.slice(start, end + 1);
+}
+
+/**
+ * Coerce a raw JSON object into a `CommandExplanation`. Missing / malformed
+ * fields produce sensible defaults (`unknown` reversibility, empty risks).
+ * Returns `undefined` when there's literally nothing usable (no summary and
+ * no risks) so callers can fall back to the non-explanation card layout.
+ */
+function coerceExplanation(obj: Record<string, unknown>): CommandExplanation | undefined {
+  const summary = typeof obj.summary === 'string' ? obj.summary.trim() : '';
+  const rawRisks = Array.isArray(obj.risks) ? obj.risks : [];
+  const risks = rawRisks
+    .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+    .map((r) => r.trim());
+  const rev = obj.reversible;
+  const reversible: CommandExplanation['reversible'] =
+    rev === 'yes' || rev === 'no' || rev === 'partial' || rev === 'unknown'
+      ? rev
+      : 'unknown';
+  if (!summary && risks.length === 0) return undefined;
+  return { summary, risks, reversible };
+}
+
+/**
+ * Parse a full classifier response (verdict + optional explanation).
+ *
+ * Prefers the JSON shape emitted by the current prompt; falls back to
+ * `parseVerdict()` on plain-text responses so older-style canned responses
+ * (bare `APPROVE`/`DENY`/`ESCALATE`) keep working. Any parse failure produces
+ * `{verdict: 'escalate'}` with no explanation — the handler will then drive
+ * the card with the legacy compact layout.
+ */
+export function parseClassifierResponse(
+  response: string,
+): { verdict: SmartVerdict; explanation?: CommandExplanation } {
+  const trimmed = response.trim();
+  if (!trimmed) return { verdict: 'escalate' };
+
+  const jsonCandidate = extractJsonObject(trimmed);
+  if (jsonCandidate) {
+    try {
+      const obj = JSON.parse(jsonCandidate) as Record<string, unknown>;
+      const verdictRaw = typeof obj.verdict === 'string' ? obj.verdict : '';
+      const verdict = parseVerdict(verdictRaw);
+      const explanation = coerceExplanation(obj);
+      return { verdict, explanation };
+    } catch {
+      // Fall through to plain-text parsing.
+    }
+  }
+  return { verdict: parseVerdict(trimmed) };
+}
+
+/**
+ * Parse an explanation-only response (used by `explain()` for the hard-
+ * blacklist path). Returns `undefined` when no JSON object can be coerced.
+ */
+export function parseExplanationResponse(response: string): CommandExplanation | undefined {
+  const trimmed = response.trim();
+  if (!trimmed) return undefined;
+  const jsonCandidate = extractJsonObject(trimmed);
+  if (!jsonCandidate) return undefined;
+  try {
+    const obj = JSON.parse(jsonCandidate) as Record<string, unknown>;
+    return coerceExplanation(obj);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -300,7 +440,7 @@ export class SmartApprovalClassifier {
       return { verdict: 'escalate', reason: 'empty response', latencyMs };
     }
 
-    const verdict = parseVerdict(trimmed);
+    const { verdict, explanation } = parseClassifierResponse(trimmed);
     return {
       verdict,
       reason:
@@ -309,6 +449,61 @@ export class SmartApprovalClassifier {
           : verdict,
       latencyMs,
       raw: trimmed.slice(0, 200),
+      explanation,
     };
+  }
+
+  /**
+   * Generate an operator-facing explanation without asking for a verdict.
+   *
+   * Used by the approval handler for hard-blacklisted commands, which are
+   * always shown to a human regardless of classifier opinion — the verdict
+   * is moot, but a short "what this does / why it's risky" blurb on the
+   * card helps the operator decide faster. Best-effort: any failure
+   * (timeout, parse error, disabled, missing model) returns `undefined`
+   * and the card renders without the extra sections.
+   */
+  async explain(req: SmartApprovalRequest): Promise<CommandExplanation | undefined> {
+    if (!this.cfg.enabled) return undefined;
+    const model = this.getModel();
+    if (!model) return undefined;
+
+    const prompt = buildExplainPrompt(req);
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => abortController.abort(), this.cfg.timeoutMs);
+    if (typeof timeoutHandle === 'object' && 'unref' in timeoutHandle) {
+      (timeoutHandle as { unref(): void }).unref();
+    }
+
+    let text = '';
+    try {
+      for await (const msg of this.queryFn({ prompt, model, abortController })) {
+        if (msg.type === 'assistant') {
+          const content = (msg.message as { content?: unknown[] } | undefined)?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              const b = block as { type?: string; text?: string };
+              if (b.type === 'text' && typeof b.text === 'string') text += b.text;
+            }
+          }
+        }
+        if (msg.type === 'result') break;
+      }
+    } catch (err) {
+      const timedOut = abortController.signal.aborted;
+      this.logger.warn(
+        {
+          err: (err as Error)?.message,
+          timedOut,
+          command: req.command.slice(0, 200),
+        },
+        'smart approval explain failed — proceeding without explanation',
+      );
+      clearTimeout(timeoutHandle);
+      return undefined;
+    }
+    clearTimeout(timeoutHandle);
+
+    return parseExplanationResponse(text);
   }
 }

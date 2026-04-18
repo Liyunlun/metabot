@@ -35,7 +35,7 @@ import {
   normalizeCommandForDetection,
 } from './dangerous-patterns.js';
 import { isHardBlacklisted } from './hard-blacklist.js';
-import type { ApprovalStore } from './approval-store.js';
+import type { ApprovalStore, CommandExplanation } from './approval-store.js';
 import type {
   SmartApprovalClassifier,
   SmartApprovalResult,
@@ -59,11 +59,18 @@ export interface Logger {
 }
 
 /**
- * The classifier interface the handler actually calls. Narrowed to the single
- * method used so tests can inject a plain object without constructing the
+ * The classifier interface the handler actually calls. Narrowed to just the
+ * methods used so tests can inject a plain object without constructing the
  * full `SmartApprovalClassifier`.
+ *
+ * `explain` is optional — if the injected classifier doesn't provide it,
+ * the hard-blacklist path simply raises the card without an operator-facing
+ * explanation (legacy compact layout). Tests that only exercise the
+ * verdict paths can keep using `{classify}` alone.
  */
-export type ClassifierLike = Pick<SmartApprovalClassifier, 'classify'>;
+export type ClassifierLike = Pick<SmartApprovalClassifier, 'classify'> & {
+  explain?: SmartApprovalClassifier['explain'];
+};
 
 export interface CreateApprovalHandlerDeps {
   /**
@@ -278,6 +285,28 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
       smartReason: classifierResult?.reason,
     });
 
+    // Enrich the card with an LLM-generated explanation so the operator sees
+    // *what* this command does and *why* it's risky before clicking. Two
+    // sources, falling back gracefully:
+    //   1. Escalate path: reuse `classifierResult.explanation` if the JSON
+    //      prompt produced one — no extra LLM call.
+    //   2. Hard-blacklist path: `classify()` was deliberately skipped above,
+    //      so fire `explain()` here as a best-effort side call. Any failure
+    //      (timeout, no classifier, classify-disabled, parse error) leaves
+    //      `explanation` undefined and the card renders the legacy compact
+    //      layout — safety is unaffected.
+    let explanation: CommandExplanation | undefined = classifierResult?.explanation;
+    if (!explanation && hard.blacklisted && smartApproval?.explain) {
+      try {
+        explanation = await smartApproval.explain({ command, description, cwd });
+      } catch (err) {
+        logger.warn(
+          { err: (err as Error)?.message, chatId, command: command.slice(0, 200) },
+          'smart approval explain threw — proceeding without explanation',
+        );
+      }
+    }
+
     // `bypassAllowlist` kicks in for hard-blacklisted commands so the card
     // is actually shown even if a session/permanent approval exists for the
     // shared `patternKey` (e.g. prior approval of `rm -rf /tmp/foo` must not
@@ -285,7 +314,7 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
     // above for the non-blacklisted branch.
     const choice = await approvalStore.promptApproval(
       sessionKey,
-      { command, description, patternKey },
+      { command, description, patternKey, explanation },
       hard.blacklisted ? { bypassAllowlist: true } : undefined,
     );
     const verdict: 'allow' | 'deny' = choice === 'deny' ? 'deny' : 'allow';

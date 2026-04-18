@@ -3,7 +3,10 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import {
   SmartApprovalClassifier,
   buildClassifierPrompt,
+  buildExplainPrompt,
   parseVerdict,
+  parseClassifierResponse,
+  parseExplanationResponse,
   buildClassifierEnv,
   type QueryFn,
   type Logger,
@@ -105,6 +108,140 @@ describe('parseVerdict', () => {
 
   it('SECURITY: ANTIDENY is NOT parsed as DENY (word boundary)', () => {
     expect(parseVerdict('ANTIDENY')).toBe('escalate');
+  });
+});
+
+describe('buildExplainPrompt', () => {
+  it('is verdict-free (does not ask for APPROVE/DENY/ESCALATE)', () => {
+    const p = buildExplainPrompt({
+      command: 'rm -rf /',
+      description: 'delete in root path',
+      cwd: '/home/user/proj',
+    });
+    expect(p).toContain('Command: rm -rf /');
+    expect(p).toContain('Flagged reason: delete in root path');
+    expect(p).toContain('Working directory: /home/user/proj');
+    expect(p).toContain('summary');
+    expect(p).toContain('risks');
+    expect(p).toContain('reversible');
+    // Explain prompt must NOT nudge the model toward a verdict — these
+    // commands always reach the user regardless of LLM opinion.
+    expect(p).not.toMatch(/\bAPPROVE\b/);
+    expect(p).not.toMatch(/\bDENY\b/);
+    expect(p).not.toMatch(/\bESCALATE\b/);
+  });
+});
+
+describe('parseClassifierResponse', () => {
+  it('parses a well-formed JSON object into verdict + explanation', () => {
+    const r = parseClassifierResponse(
+      JSON.stringify({
+        verdict: 'DENY',
+        summary: '递归删除 /tmp 下的文件',
+        risks: ['可能误删未备份数据', '可能影响正在运行的进程'],
+        reversible: 'no',
+      }),
+    );
+    expect(r.verdict).toBe('deny');
+    expect(r.explanation).toBeDefined();
+    expect(r.explanation!.summary).toBe('递归删除 /tmp 下的文件');
+    expect(r.explanation!.risks).toHaveLength(2);
+    expect(r.explanation!.reversible).toBe('no');
+  });
+
+  it('tolerates prose around the JSON block', () => {
+    const r = parseClassifierResponse(
+      'Here is my analysis:\n{"verdict":"APPROVE","summary":"打印字符串","risks":[],"reversible":"yes"}\nThanks!',
+    );
+    expect(r.verdict).toBe('approve');
+    expect(r.explanation?.summary).toBe('打印字符串');
+    expect(r.explanation?.risks).toEqual([]);
+    expect(r.explanation?.reversible).toBe('yes');
+  });
+
+  it('falls back to plain-text verdict parsing when no JSON present', () => {
+    const r = parseClassifierResponse('APPROVE');
+    expect(r.verdict).toBe('approve');
+    expect(r.explanation).toBeUndefined();
+  });
+
+  it('on malformed JSON falls back to plain-text verdict parsing (no explanation)', () => {
+    // JSON fails to parse → we hand the raw string to parseVerdict, which
+    // finds APPROVE as a standalone token. The operator still gets a sane
+    // verdict even if the model returned an incomplete JSON object. There's
+    // no `explanation` though (coerceExplanation never ran).
+    const r = parseClassifierResponse('{"verdict": "APPROVE", malformed');
+    expect(r.verdict).toBe('approve');
+    expect(r.explanation).toBeUndefined();
+  });
+
+  it('malformed JSON with no verdict word → escalate', () => {
+    const r = parseClassifierResponse('{oops totally broken');
+    expect(r.verdict).toBe('escalate');
+    expect(r.explanation).toBeUndefined();
+  });
+
+  it('coerces unknown reversibility values to "unknown"', () => {
+    const r = parseClassifierResponse(
+      JSON.stringify({
+        verdict: 'ESCALATE',
+        summary: 's',
+        risks: ['r'],
+        reversible: 'maybe',
+      }),
+    );
+    expect(r.explanation?.reversible).toBe('unknown');
+  });
+
+  it('filters out non-string risk entries', () => {
+    const r = parseClassifierResponse(
+      JSON.stringify({
+        verdict: 'DENY',
+        summary: 's',
+        risks: ['valid', 42, null, '   ', 'another valid'],
+        reversible: 'no',
+      }),
+    );
+    expect(r.explanation?.risks).toEqual(['valid', 'another valid']);
+  });
+
+  it('returns no explanation when summary + risks are both empty', () => {
+    const r = parseClassifierResponse(
+      JSON.stringify({ verdict: 'APPROVE', summary: '', risks: [], reversible: 'yes' }),
+    );
+    expect(r.verdict).toBe('approve');
+    expect(r.explanation).toBeUndefined();
+  });
+
+  it('empty string → escalate', () => {
+    expect(parseClassifierResponse('').verdict).toBe('escalate');
+  });
+});
+
+describe('parseExplanationResponse', () => {
+  it('parses a JSON explanation block', () => {
+    const exp = parseExplanationResponse(
+      JSON.stringify({
+        summary: '格式化 /dev/sda',
+        risks: ['永久丢失所有数据'],
+        reversible: 'no',
+      }),
+    );
+    expect(exp).toBeDefined();
+    expect(exp!.summary).toBe('格式化 /dev/sda');
+    expect(exp!.reversible).toBe('no');
+  });
+
+  it('returns undefined for plain text (no JSON block)', () => {
+    expect(parseExplanationResponse('Sorry, cannot comply.')).toBeUndefined();
+  });
+
+  it('returns undefined for malformed JSON', () => {
+    expect(parseExplanationResponse('{broken')).toBeUndefined();
+  });
+
+  it('returns undefined when the JSON is empty of content', () => {
+    expect(parseExplanationResponse('{"summary":"","risks":[]}')).toBeUndefined();
   });
 });
 
@@ -251,6 +388,119 @@ describe('SmartApprovalClassifier.classify', () => {
     await c.classify(REQ);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0].model).toBe('claude-opus-4-7');
+  });
+
+  it('populates explanation when the query yields structured JSON', async () => {
+    const json = JSON.stringify({
+      verdict: 'DENY',
+      summary: '递归删除 /home 下所有文件',
+      risks: ['用户数据永久丢失'],
+      reversible: 'no',
+    });
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      makeLogger(),
+      () => cannedStream(json),
+    );
+    const r = await c.classify(REQ);
+    expect(r.verdict).toBe('deny');
+    expect(r.explanation).toBeDefined();
+    expect(r.explanation!.summary).toBe('递归删除 /home 下所有文件');
+    expect(r.explanation!.reversible).toBe('no');
+  });
+
+  it('omits explanation when the query returns a bare verdict word', async () => {
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      makeLogger(),
+      () => cannedStream('APPROVE'),
+    );
+    const r = await c.classify(REQ);
+    expect(r.verdict).toBe('approve');
+    expect(r.explanation).toBeUndefined();
+  });
+});
+
+describe('SmartApprovalClassifier.explain', () => {
+  it('returns the parsed explanation on a valid JSON response', async () => {
+    const json = JSON.stringify({
+      summary: '强制删除所有根目录文件',
+      risks: ['系统不可启动', '数据丢失不可恢复'],
+      reversible: 'no',
+    });
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      makeLogger(),
+      () => cannedStream(json),
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeDefined();
+    expect(exp!.summary).toBe('强制删除所有根目录文件');
+    expect(exp!.risks).toHaveLength(2);
+    expect(exp!.reversible).toBe('no');
+  });
+
+  it('returns undefined on timeout', async () => {
+    const logger = makeLogger();
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 20 },
+      () => 'claude-sonnet-4-6',
+      logger,
+      ({ abortController }) => hangingStream(abortController),
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('returns undefined when disabled', async () => {
+    const spy = vi.fn<QueryFn>(() => cannedStream('{"summary":"x","risks":[],"reversible":"yes"}'));
+    const c = new SmartApprovalClassifier(
+      { enabled: false, timeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      makeLogger(),
+      spy,
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when no model is configured', async () => {
+    const spy = vi.fn<QueryFn>(() => cannedStream('{}'));
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5000 },
+      () => undefined,
+      makeLogger(),
+      spy,
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when the query throws', async () => {
+    const logger = makeLogger();
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      logger,
+      () => ({
+        [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
+          return {
+            next(): Promise<IteratorResult<SDKMessage>> {
+              return Promise.reject(new Error('boom'));
+            },
+          };
+        },
+      }),
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalled();
   });
 });
 

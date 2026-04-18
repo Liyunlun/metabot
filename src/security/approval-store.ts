@@ -27,6 +27,28 @@
 /** The four user choices, identical to Hermes. */
 export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny';
 
+/**
+ * Optional LLM-generated explanation attached to an approval request.
+ *
+ * Produced by `SmartApprovalClassifier.classify()` or `.explain()` and
+ * rendered on the Feishu card so operators see "what this does / why it's
+ * risky / is it reversible" before clicking. The field is optional: when the
+ * classifier is disabled, unavailable, or fails to produce parseable JSON,
+ * the card falls back to the legacy compact layout with no loss of safety.
+ *
+ * Kept here (rather than in `smart-approval.ts`) so the data-model modules
+ * (`approval-store` / `approval-card`) don't have to import from the
+ * classifier — smart-approval imports this instead.
+ */
+export interface CommandExplanation {
+  /** One-sentence plain-language description of what the command does. */
+  summary: string;
+  /** 0–3 concrete risks; rendered as bullets. */
+  risks: string[];
+  /** Reversibility bucket; rendered as a human label. */
+  reversible: 'yes' | 'no' | 'partial' | 'unknown';
+}
+
 /** Data delivered to the notify callback so it can render a prompt. */
 export interface ApprovalRequest {
   /** The raw command string the agent wants to run. */
@@ -35,6 +57,12 @@ export interface ApprovalRequest {
   description: string;
   /** Canonical approval key (same as Hermes `pattern_key` — the description). */
   patternKey: string;
+  /**
+   * Optional LLM-generated explanation for the card. Populated by the
+   * approval handler before calling `promptApproval`; absent when the
+   * classifier is disabled, unavailable, or produced no parseable output.
+   */
+  explanation?: CommandExplanation;
 }
 
 /**

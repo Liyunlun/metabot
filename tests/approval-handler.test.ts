@@ -409,6 +409,140 @@ describe('createApprovalHandler — audit phase field', () => {
   });
 });
 
+describe('createApprovalHandler — LLM explanation plumbing', () => {
+  const EXPL = {
+    summary: '递归删除命令',
+    risks: ['可能丢失未备份数据'],
+    reversible: 'no' as const,
+  };
+
+  it('passes classifier explanation through to the card on escalate', async () => {
+    const store = new ApprovalStore();
+    const cls: ClassifierLike = {
+      classify: vi.fn(async () => ({
+        verdict: 'escalate' as const,
+        reason: 'escalate',
+        latencyMs: 10,
+        explanation: EXPL,
+      })),
+    };
+    const seen: unknown[] = [];
+    store.registerNotify(CHAT, (id, req) => {
+      seen.push(req);
+      queueMicrotask(() => store.resolveById(id, 'once'));
+    });
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: cls,
+      cardPromptAvailable: true,
+      audit: makeAudit(),
+      logger: makeLogger(),
+    });
+
+    await handler('rm -rf /tmp/foo');
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as { explanation?: unknown }).explanation).toEqual(EXPL);
+  });
+
+  it('calls explain() on the hard-blacklist path when available', async () => {
+    const store = new ApprovalStore();
+    const explain = vi.fn(async () => EXPL);
+    const cls: ClassifierLike = {
+      classify: vi.fn(async () => ({
+        verdict: 'approve' as const,
+        reason: 'approve',
+        latencyMs: 5,
+      })),
+      explain,
+    };
+    const seen: unknown[] = [];
+    store.registerNotify(CHAT, (id, req) => {
+      seen.push(req);
+      queueMicrotask(() => store.resolveById(id, 'deny'));
+    });
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: cls,
+      cardPromptAvailable: true,
+      audit: makeAudit(),
+      logger: makeLogger(),
+    });
+
+    await handler('rm -rf /');
+    // classify is NOT called for hard-blacklisted commands…
+    expect(cls.classify).not.toHaveBeenCalled();
+    // …but explain() IS, so the card gets an operator-facing description.
+    expect(explain).toHaveBeenCalledTimes(1);
+    expect((seen[0] as { explanation?: unknown }).explanation).toEqual(EXPL);
+  });
+
+  it('survives explain() throwing — card still raised, no explanation', async () => {
+    const store = new ApprovalStore();
+    const cls: ClassifierLike = {
+      classify: vi.fn(),
+      explain: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+    };
+    const seen: unknown[] = [];
+    store.registerNotify(CHAT, (id, req) => {
+      seen.push(req);
+      queueMicrotask(() => store.resolveById(id, 'deny'));
+    });
+    const logger = makeLogger();
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: cls,
+      cardPromptAvailable: true,
+      audit: makeAudit(),
+      logger,
+    });
+
+    await expect(handler('rm -rf /')).resolves.toBe('deny');
+    expect((seen[0] as { explanation?: unknown }).explanation).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('hard-blacklist path without explain() method: no crash, no explanation', async () => {
+    const store = new ApprovalStore();
+    const cls: ClassifierLike = {
+      classify: vi.fn(async () => ({
+        verdict: 'approve' as const,
+        reason: 'approve',
+        latencyMs: 5,
+      })),
+      // explain deliberately omitted
+    };
+    const seen: unknown[] = [];
+    store.registerNotify(CHAT, (id, req) => {
+      seen.push(req);
+      queueMicrotask(() => store.resolveById(id, 'deny'));
+    });
+    const handler = createApprovalHandler({
+      chatId: CHAT,
+      cwd: CWD,
+      botName: 'metabot',
+      approvalStore: store,
+      smartApproval: cls,
+      cardPromptAvailable: true,
+      audit: makeAudit(),
+      logger: makeLogger(),
+    });
+
+    await expect(handler('rm -rf /')).resolves.toBe('deny');
+    expect((seen[0] as { explanation?: unknown }).explanation).toBeUndefined();
+  });
+});
+
 describe('createApprovalHandler — classifier absent', () => {
   it('falls through to the card when no classifier is injected', async () => {
     const store = new ApprovalStore();

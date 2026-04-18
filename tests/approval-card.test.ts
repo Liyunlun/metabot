@@ -78,6 +78,75 @@ describe('buildPendingApprovalCard', () => {
     });
     expect(json).toContain('\\\\`whoami\\\\`'); // JSON-escaped "\\`whoami\\`"
   });
+
+  describe('LLM-generated explanation', () => {
+    const explainedReq = {
+      ...REQ,
+      explanation: {
+        summary: '递归删除 /tmp/foo 及其子目录',
+        risks: ['可能误删未备份的数据', '无法通过回收站恢复'],
+        reversible: 'no' as const,
+      },
+    };
+
+    it('renders summary, risks, and reversibility when explanation is provided', () => {
+      const json = buildPendingApprovalCard({ approvalId: 'a_1', request: explainedReq });
+      expect(json).toContain('这条命令做什么');
+      expect(json).toContain('递归删除 /tmp/foo');
+      expect(json).toContain('潜在风险');
+      expect(json).toContain('可能误删未备份的数据');
+      expect(json).toContain('无法通过回收站恢复');
+      expect(json).toContain('可逆性');
+      expect(json).toContain('不可逆');
+    });
+
+    it('still emits 4 buttons when explanation is present', () => {
+      const card = parseCard(
+        buildPendingApprovalCard({ approvalId: 'a_1', request: explainedReq }),
+      );
+      const action = card.elements.find((e: any) => e.tag === 'action');
+      expect(action.actions).toHaveLength(4);
+    });
+
+    it('omits the explanation block entirely when not provided (no empty section)', () => {
+      const json = buildPendingApprovalCard({ approvalId: 'a_1', request: REQ });
+      expect(json).not.toContain('这条命令做什么');
+      expect(json).not.toContain('潜在风险');
+      expect(json).not.toContain('可逆性');
+    });
+
+    it('handles each reversibility bucket', () => {
+      for (const [bucket, label] of [
+        ['yes', '可逆'],
+        ['no', '不可逆'],
+        ['partial', '部分可逆'],
+        ['unknown', '未知'],
+      ] as const) {
+        const json = buildPendingApprovalCard({
+          approvalId: 'a_1',
+          request: {
+            ...REQ,
+            explanation: { summary: 's', risks: [], reversible: bucket },
+          },
+        });
+        expect(json).toContain(label);
+      }
+    });
+
+    it('renders summary-only explanation without an empty risks list', () => {
+      const json = buildPendingApprovalCard({
+        approvalId: 'a_1',
+        request: {
+          ...REQ,
+          explanation: { summary: '只是打印一行', risks: [], reversible: 'yes' },
+        },
+      });
+      expect(json).toContain('这条命令做什么');
+      expect(json).toContain('只是打印一行');
+      // An empty risks list must not produce an orphan bullet heading.
+      expect(json).not.toContain('潜在风险');
+    });
+  });
 });
 
 describe('buildResolvedApprovalCard', () => {
@@ -123,5 +192,23 @@ describe('buildResolvedApprovalCard', () => {
     );
     const action = card.elements.find((e: any) => e.tag === 'action');
     expect(action).toBeUndefined();
+  });
+
+  it('preserves the LLM explanation on the resolved card for audit review', () => {
+    const json = buildResolvedApprovalCard({
+      approvalId: 'a_1',
+      request: {
+        ...REQ,
+        explanation: {
+          summary: '递归删除命令',
+          risks: ['数据丢失'],
+          reversible: 'no',
+        },
+      },
+      choice: 'deny',
+    });
+    expect(json).toContain('这条命令做什么');
+    expect(json).toContain('递归删除命令');
+    expect(json).toContain('不可逆');
   });
 });
