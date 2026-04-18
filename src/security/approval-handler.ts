@@ -288,15 +288,18 @@ export function createApprovalHandler(deps: CreateApprovalHandlerDeps): Approval
     // Enrich the card with an LLM-generated explanation so the operator sees
     // *what* this command does and *why* it's risky before clicking. Two
     // sources, falling back gracefully:
-    //   1. Escalate path: reuse `classifierResult.explanation` if the JSON
-    //      prompt produced one — no extra LLM call.
-    //   2. Hard-blacklist path: `classify()` was deliberately skipped above,
-    //      so fire `explain()` here as a best-effort side call. Any failure
-    //      (timeout, no classifier, classify-disabled, parse error) leaves
+    //   1. Happy path: reuse `classifierResult.explanation` if the JSON
+    //      classify prompt produced one — no extra LLM call.
+    //   2. Fallback: fire `explain()` whenever we're about to raise a card
+    //      but don't have an explanation yet. This covers BOTH:
+    //        - hard-blacklist path, where `classify()` was deliberately skipped
+    //        - escalate path where classify timed out / threw / returned no
+    //          JSON (e.g. plain-text "ESCALATE"), so `explanation` is absent
+    //      Any failure (timeout, no classifier, parse error) leaves
     //      `explanation` undefined and the card renders the legacy compact
     //      layout — safety is unaffected.
     let explanation: CommandExplanation | undefined = classifierResult?.explanation;
-    if (!explanation && hard.blacklisted && smartApproval?.explain) {
+    if (!explanation && smartApproval?.explain) {
       try {
         explanation = await smartApproval.explain({ command, description, cwd });
       } catch (err) {
