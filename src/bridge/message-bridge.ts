@@ -183,6 +183,11 @@ export class MessageBridge {
       {
         enabled: smartCfg?.enabled ?? true,
         timeoutMs: smartCfg?.timeoutMs ?? 5000,
+        // Explain gets a longer budget than classify — it only runs for
+        // hard-blacklisted commands, which are already destined for a
+        // user card, so a few extra seconds to produce a populated
+        // summary/risks/reversibility block is worth the latency.
+        explainTimeoutMs: smartCfg?.explainTimeoutMs ?? 15000,
       },
       () => this.config.claude.model,
       logger,

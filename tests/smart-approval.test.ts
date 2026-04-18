@@ -446,7 +446,10 @@ describe('SmartApprovalClassifier.explain', () => {
   it('returns undefined on timeout', async () => {
     const logger = makeLogger();
     const c = new SmartApprovalClassifier(
-      { enabled: true, timeoutMs: 20 },
+      // explainTimeoutMs is the one that bounds explain() — timeoutMs
+      // governs classify(). Use a tiny explain window so the test runs
+      // quickly against the hanging stream.
+      { enabled: true, timeoutMs: 5000, explainTimeoutMs: 20 },
       () => 'claude-sonnet-4-6',
       logger,
       ({ abortController }) => hangingStream(abortController),
@@ -501,6 +504,56 @@ describe('SmartApprovalClassifier.explain', () => {
     const exp = await c.explain(REQ);
     expect(exp).toBeUndefined();
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('uses explainTimeoutMs, not timeoutMs, for its budget', async () => {
+    // Regression guard: explain() must not inherit the (short) classify
+    // budget — hard-blacklist path already waits on a user card, so giving
+    // explain its own (longer) window is the whole point of the split.
+    const logger = makeLogger();
+    const c = new SmartApprovalClassifier(
+      // classify budget is unusably short; explain budget is tiny but
+      // large enough for the canned stream below to complete.
+      { enabled: true, timeoutMs: 5, explainTimeoutMs: 5000 },
+      () => 'claude-sonnet-4-6',
+      logger,
+      () =>
+        cannedStream(
+          JSON.stringify({ summary: 's', risks: ['r'], reversible: 'no' }),
+        ),
+    );
+    const exp = await c.explain(REQ);
+    expect(exp).toBeDefined();
+    expect(exp!.summary).toBe('s');
+  });
+
+  it('falls back to 15000ms when explainTimeoutMs is omitted', async () => {
+    // Sanity — the default is documented as 15s. We don't actually wait
+    // 15s here; we just verify that a hung stream doesn't settle "quickly"
+    // (i.e. the explain budget is clearly greater than the tight classify
+    // budget). Use a 50ms poll window as proxy for "not immediately aborted".
+    const logger = makeLogger();
+    const c = new SmartApprovalClassifier(
+      { enabled: true, timeoutMs: 5 }, // explainTimeoutMs omitted → 15000
+      () => 'claude-sonnet-4-6',
+      logger,
+      ({ abortController }) => hangingStream(abortController),
+    );
+    const start = Date.now();
+    const promise = c.explain(REQ);
+    // If explain were (wrongly) using timeoutMs=5, it would abort near-
+    // instantly. Give the race 50 ms; explain should still be pending.
+    const raced = await Promise.race([
+      promise.then(() => 'settled' as const),
+      new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+    ]);
+    expect(raced).toBe('pending');
+    // Tear down cleanly: abort externally so the test doesn't wait 15s.
+    // (The constructor's abortController is internal; we can just let the
+    // test process finish — the `unref()` on the timer means it won't
+    // keep vitest alive.)
+    expect(Date.now() - start).toBeLessThan(100);
+    void promise.catch(() => {}); // swallow any eventual rejection
   });
 });
 

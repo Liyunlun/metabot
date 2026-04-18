@@ -37,6 +37,8 @@ export interface BotConfigBase {
       enabled?: boolean;
       /** Wall-clock budget for a single classify() call in ms. Default `5000`. */
       timeoutMs?: number;
+      /** Wall-clock budget for explain() in ms. Default `15000`. Runs only on hard-blacklisted commands that are going to a card anyway. */
+      explainTimeoutMs?: number;
     };
   };
 }
@@ -45,6 +47,7 @@ export interface ApprovalConfigJsonEntry {
   smartApproval?: {
     enabled?: boolean;
     timeoutMs?: number;
+    explainTimeoutMs?: number;
   };
 }
 

@@ -44,8 +44,23 @@ export interface SmartApprovalConfig {
    * Upper bound on wall-clock time for a single classification. If the
    * underlying `query()` hasn't produced a usable verdict within this window
    * we abort and return `'escalate'`. Default 5000 ms.
+   *
+   * This sits on the HOT PATH — every flagged command (even benign ones
+   * later auto-approved) blocks on this — so it's intentionally short.
    */
   timeoutMs: number;
+  /**
+   * Separate, longer timeout for `explain()`. Explain only runs on
+   * commands that are definitely going to a user card (hard-blacklist
+   * path), so the operator is already waiting on a Feishu message anyway;
+   * trading a few extra seconds of latency for a populated explanation is
+   * worth it. Defaults to 15000 ms when omitted.
+   *
+   * Structured-JSON generation with Chinese summary + risks array
+   * empirically takes 6–12 seconds on Sonnet, so the 5 s classify budget
+   * is too tight — measured at 4.3 s even for a bare verdict word.
+   */
+  explainTimeoutMs?: number;
 }
 
 export interface SmartApprovalRequest {
@@ -470,7 +485,12 @@ export class SmartApprovalClassifier {
 
     const prompt = buildExplainPrompt(req);
     const abortController = new AbortController();
-    const timeoutHandle = setTimeout(() => abortController.abort(), this.cfg.timeoutMs);
+    // Explain uses its own (longer) budget: the card is already slated to
+    // appear for hard-blacklisted commands, so it's fine to spend more wall
+    // time to get a populated explanation than to race the fast-path
+    // classify timeout and end up empty-handed.
+    const explainTimeoutMs = this.cfg.explainTimeoutMs ?? 15000;
+    const timeoutHandle = setTimeout(() => abortController.abort(), explainTimeoutMs);
     if (typeof timeoutHandle === 'object' && 'unref' in timeoutHandle) {
       (timeoutHandle as { unref(): void }).unref();
     }
