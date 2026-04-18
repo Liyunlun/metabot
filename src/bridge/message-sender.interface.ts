@@ -37,6 +37,22 @@ export interface IMessageSender {
   /** Download a user-sent file to a local path. */
   downloadFile(messageId: string, fileKey: string, savePath: string): Promise<boolean>;
 
+  /**
+   * Send a raw platform-native card payload (e.g. Feishu 2.0 card JSON).
+   * Used for special-purpose cards that don't fit the CardState schema —
+   * currently the dangerous-command approval card (see
+   * `src/security/approval-card.ts`). Returns `undefined` on platforms that
+   * don't support raw cards; the caller must degrade gracefully (e.g. fall
+   * back to `sendTextNotice`).
+   */
+  sendRawCard?(chatId: string, cardJson: string): Promise<string | undefined>;
+
+  /**
+   * Update an existing raw card. Returns `false` on platforms that don't
+   * support raw cards OR on transport failure.
+   */
+  updateRawCard?(messageId: string, cardJson: string): Promise<boolean>;
+
   /** If true, the bridge will not send a separate "Task completed" text after the card update. */
   skipCompletionNotice?: boolean;
 }

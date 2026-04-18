@@ -19,6 +19,11 @@ import { CostTracker } from '../utils/cost-tracker.js';
 import { metrics } from '../utils/metrics.js';
 import { splitResponseText } from '../feishu/card-builder.js';
 import type { SessionRegistry } from '../session/session-registry.js';
+import { approvalStore, buildSessionKey } from '../security/approval-store.js';
+import { PermanentApprovalStore } from '../security/permanent-approval-store.js';
+import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
+import { SmartApprovalClassifier } from '../security/smart-approval.js';
+import { createApprovalHandler } from '../security/approval-handler.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
@@ -142,6 +147,8 @@ export class MessageBridge {
   private runningTasks = new Map<string, RunningTask>(); // keyed by chatId
   private messageQueues = new Map<string, IncomingMessage[]>(); // per-chatId message queue
   private pendingBatches = new Map<string, PendingBatch>(); // media debounce batches
+  private approvalBridge?: ApprovalBridge; // dangerous-command approval UI (Feishu only)
+  private smartApproval: SmartApprovalClassifier; // Phase 4 LLM pre-filter
   /** Callback for activity lifecycle events (task started/completed/failed). */
   onActivityEvent?: (event: ActivityEventData) => void;
 
@@ -167,6 +174,50 @@ export class MessageBridge {
     );
 
     this.outputHandler = new OutputHandler(logger, sender, this.outputsManager);
+
+    // Phase 4 LLM pre-filter. Enabled by default; operators opt out via
+    // `approval.smartApproval.enabled = false` in bots.json. Model tracks
+    // `config.claude.model` at call time so /model switches propagate.
+    const smartCfg = config.approval?.smartApproval;
+    this.smartApproval = new SmartApprovalClassifier(
+      {
+        enabled: smartCfg?.enabled ?? true,
+        timeoutMs: smartCfg?.timeoutMs ?? 5000,
+        // Explain gets a longer budget than classify — it only runs for
+        // hard-blacklisted commands, which are already destined for a
+        // user card, so a few extra seconds to produce a populated
+        // summary/risks/reversibility block is worth the latency.
+        explainTimeoutMs: smartCfg?.explainTimeoutMs ?? 15000,
+      },
+      () => this.config.claude.model,
+      logger,
+    );
+
+    // Dangerous-command approval wiring — only enabled on platforms that
+    // implement sendRawCard / updateRawCard (currently Feishu). Telegram and
+    // other platforms silently degrade: Bash commands still run without the
+    // button-confirmation UI, same as before Issue #14.
+    if (sender.sendRawCard && sender.updateRawCard) {
+      const cardSender: CardSender = {
+        sendCard: (chatId, json) => sender.sendRawCard!(chatId, json),
+        updateCard: (messageId, json) => sender.updateRawCard!(messageId, json),
+      };
+      this.approvalBridge = new ApprovalBridge(approvalStore, cardSender, logger);
+      this.commandHandler.setApprovalBridge(this.approvalBridge);
+    }
+
+    // Phase 5 — permanent allowlist persistence. Wire the file-backed
+    // store so `/approve always` decisions survive bot restarts. Awaited
+    // lazily (not blocking the constructor); the first prompt after boot
+    // may race the initial load, but `approvePermanent()` writes through
+    // immediately so the subsequent startup will see it.
+    void approvalStore
+      .attachPermanentStore(
+        new PermanentApprovalStore({
+          onError: (msg, err) => logger.warn({ err }, `[approval] ${msg}`),
+        }),
+      )
+      .catch((err) => logger.warn({ err }, '[approval] initial permanent-store load failed'));
   }
 
   /** Emit an activity event if a listener is registered. */
@@ -359,9 +410,14 @@ export class MessageBridge {
     messageId: string;
     value: Record<string, unknown>;
   }): Promise<void> {
+    // Dangerous-command approval buttons — route first so the AskUserQuestion
+    // path below doesn't need to know about this kind. handleButtonClick
+    // returns true if it handled the value.
+    if (this.approvalBridge?.handleButtonClick(evt.value, evt.userId)) {
+      return;
+    }
     if (evt.value.kind !== 'askuser_answer') {
-      // Unknown action kind — ignore silently. Future action kinds (e.g.
-      // approve/deny buttons) will add their own branches here.
+      // Unknown action kind — ignore silently.
       return;
     }
     const toolUseId = typeof evt.value.toolUseId === 'string' ? evt.value.toolUseId : undefined;
@@ -718,6 +774,32 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId };
 
+    // Attach the approval bridge for this task's lifetime. detach is called
+    // in the finally block below. When approvalBridge is undefined (platforms
+    // without raw-card support — currently anything that isn't Feishu),
+    // approvalHandler returns 'deny' for any flagged command that wasn't
+    // pre-approved or smart-approved (see Codex R3 P1 scope note in
+    // approval-handler.ts). Callers relying on cross-platform flagged-command
+    // execution will fail closed until a raw-card-equivalent surface lands.
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
+
+    // Per-task Bash approval handler — full Phase 4 decision tree. Detects
+    // flagged commands, consults the pre-approval cache, runs the hard-
+    // blacklist + smart-approval pre-filter, and prompts the user via the
+    // approval card only when the classifier escalates (or is unavailable).
+    const approvalHandler = createApprovalHandler({
+      sessionKey,
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
+
     // Start multi-turn execution
     let executionHandle = this.executor.startExecution({
       prompt,
@@ -726,6 +808,7 @@ export class MessageBridge {
       abortController,
       outputsDir,
       apiContext,
+      approvalHandler,
     });
 
     const rateLimiter = new RateLimiter(1500);
@@ -1196,6 +1279,9 @@ export class MessageBridge {
         clearTimeout(runningTask.questionTimeoutId);
       }
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      // Detach the approval bridge — unregisters the notify callback and
+      // denies any still-pending approvals so the Bash hook doesn't hang.
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       // Only delete if this is still our task (guards against stopTask race condition)
       if (this.runningTasks.get(chatId) === runningTask) {
         this.runningTasks.delete(chatId);
@@ -1221,6 +1307,9 @@ export class MessageBridge {
     // Clear session before execution so each run starts with a clean context
     if (freshSession) {
       this.sessionManager.resetSession(chatId);
+      // Also clear per-chat approval state so a fresh API run doesn't inherit
+      // YOLO / session allowlist from a previous operator.
+      approvalStore.clearSession(buildSessionKey(this.config.name, chatId));
       this.logger.info({ chatId }, 'Fresh session: cleared previous session');
     }
 
@@ -1285,6 +1374,22 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId, groupMembers: options.groupMembers, groupId: options.groupId };
 
+    // Same per-task approval wiring as the interactive path — see executeQuery
+    // for the rationale. Safe no-op when approvalBridge is undefined.
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
+    const approvalHandler = createApprovalHandler({
+      sessionKey,
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
+
     let executionHandle = this.executor.startExecution({
       prompt,
       cwd,
@@ -1295,6 +1400,7 @@ export class MessageBridge {
       maxTurns: options.maxTurns,
       model: options.model,
       allowedTools: options.allowedTools,
+      approvalHandler,
     });
 
     const startTime = Date.now();
@@ -1695,6 +1801,7 @@ export class MessageBridge {
       clearTimeout(timeoutId);
       if (idleTimerId) clearTimeout(idleTimerId);
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       this.runningTasks.delete(chatId);
       metrics.setGauge('metabot_active_tasks', this.runningTasks.size);
       this.processQueue(chatId);

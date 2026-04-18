@@ -118,6 +118,15 @@ export interface ExecutorOptions {
   model?: string;
   /** Override allowed tools for this execution (empty array = no tools). */
   allowedTools?: string[];
+
+  /**
+   * Optional pre-execution approval check for Bash tool calls. Called for
+   * every Bash invocation with the candidate command string; returns
+   * `'allow'` to proceed or `'deny'` to block. Absent = no approval layer
+   * (legacy behavior). Wired by `MessageBridge` to the dangerous-command
+   * approval system (see `src/security/approval-store.ts`).
+   */
+  approvalHandler?: (command: string) => Promise<'allow' | 'deny'>;
 }
 
 export type SDKMessage = {
@@ -407,11 +416,55 @@ export class ClaudeExecutor {
       };
     };
 
+    // Bash approval hook: if the caller registered an approvalHandler, run
+    // every Bash command through it before execution. The handler returns
+    // 'allow' / 'deny'; deny → block via the SDK's permission-decision path.
+    const bashApprovalHook = async (
+      input: { hook_event_name: string; tool_name: string; tool_input: unknown },
+    ): Promise<Record<string, unknown>> => {
+      if (!options.approvalHandler) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      const toolInput = input.tool_input as { command?: string } | undefined;
+      const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+      if (!command) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      try {
+        const verdict = await options.approvalHandler(command);
+        if (verdict === 'deny') {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason:
+                '用户已拒绝此危险命令（或会话被终止）。不要再重试同一命令 — 请询问用户或尝试不同方案。',
+            },
+          };
+        }
+        return {
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+        };
+      } catch (err) {
+        this.logger.error(
+          { err: (err as Error).message, command: command.slice(0, 200) },
+          'bashApprovalHook threw — failing closed (deny)',
+        );
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: '审批系统错误，已阻断该命令 — 请稍后重试。',
+          },
+        };
+      }
+    };
+
     queryOptions.hooks = {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion',
-        hooks: [askUserQuestionHook as any],
-      }],
+      PreToolUse: [
+        { matcher: 'AskUserQuestion', hooks: [askUserQuestionHook as any] },
+        { matcher: 'Bash', hooks: [bashApprovalHook as any] },
+      ],
     };
 
     const stream = query({

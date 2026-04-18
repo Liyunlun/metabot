@@ -20,6 +20,16 @@ export class FeishuSenderAdapter implements IMessageSender {
     return this.sender.updateCard(messageId, buildCard(state));
   }
 
+  /** Send a raw Feishu card JSON payload (used for the approval card). */
+  async sendRawCard(chatId: string, cardJson: string): Promise<string | undefined> {
+    return this.sender.sendCard(chatId, cardJson);
+  }
+
+  /** Update an existing raw Feishu card JSON payload. */
+  async updateRawCard(messageId: string, cardJson: string): Promise<boolean> {
+    return this.sender.updateCard(messageId, cardJson);
+  }
+
   async sendTextNotice(chatId: string, title: string, content: string, color: string = 'blue'): Promise<void> {
     await this.sender.sendCard(chatId, buildTextCard(title, content, color));
   }
