@@ -361,8 +361,11 @@ export class MessageBridge {
       return;
     }
 
-    // All questions in this call answered — send combined result
-    const answerJson = JSON.stringify({ answers: task.collectedAnswers });
+    // All questions in this call answered — resolve the PreToolUse hook.
+    // resolveQuestion returns answers as updatedInput so the SDK short-circuits
+    // its own interaction prompt; sendAnswer is only a fallback for the legacy
+    // tool_result path (kept inside ExecutionHandle.resolveQuestion).
+    const collectedAnswers = task.collectedAnswers;
 
     if (task.questionTimeoutId) {
       clearTimeout(task.questionTimeoutId);
@@ -373,10 +376,9 @@ export class MessageBridge {
     task.collectedAnswers = {};
     task.processor.clearPendingQuestion();
 
-    const sessionId = task.processor.getSessionId() || '';
-    task.executionHandle.sendAnswer(pending.toolUseId, sessionId, answerJson);
+    task.executionHandle.resolveQuestion(pending.toolUseId, collectedAnswers);
 
-    this.logger.info({ chatId, answers: task.collectedAnswers, toolUseId: pending.toolUseId }, 'Sent all answers to Claude');
+    this.logger.info({ chatId, answers: collectedAnswers, toolUseId: pending.toolUseId }, 'Resolved AskUserQuestion hook with collected answers');
 
     // Check if there are more queued AskUserQuestion calls
     const nextPending = task.processor.getPendingQuestion();
@@ -436,14 +438,13 @@ export class MessageBridge {
       }
     }
 
-    const answerJson = JSON.stringify({ answers: task.collectedAnswers });
+    const collectedAnswers = task.collectedAnswers;
     task.pendingQuestion = null;
     task.currentQuestionIndex = 0;
     task.collectedAnswers = {};
     task.processor.clearPendingQuestion();
 
-    const sid = task.processor.getSessionId() || '';
-    task.executionHandle.sendAnswer(pending.toolUseId, sid, answerJson);
+    task.executionHandle.resolveQuestion(pending.toolUseId, collectedAnswers);
   }
 
   /** Check if message is a media message with default (auto-generated) text. */
@@ -1075,14 +1076,17 @@ export class MessageBridge {
             // Wait for the caller to provide an answer
             const answerJson = await options.onQuestion(pending);
             processor.clearPendingQuestion();
-            const sid = processor.getSessionId() || '';
-            executionHandle.sendAnswer(pending.toolUseId, sid, answerJson);
+            // Parse answers from the caller's JSON and resolve the PreToolUse hook.
+            try {
+              const parsed = JSON.parse(answerJson);
+              executionHandle.resolveQuestion(pending.toolUseId, parsed.answers || {});
+            } catch {
+              executionHandle.resolveQuestion(pending.toolUseId, { _answer: answerJson });
+            }
           } else {
             // Auto-answer when no onQuestion handler is provided
             processor.clearPendingQuestion();
-            const sid = processor.getSessionId() || '';
-            const autoAnswer = JSON.stringify({ answers: { _auto: 'Please decide on your own and proceed.' } });
-            executionHandle.sendAnswer(pending.toolUseId, sid, autoAnswer);
+            executionHandle.resolveQuestion(pending.toolUseId, { _auto: 'Please decide on your own and proceed.' });
           }
           continue;
         }

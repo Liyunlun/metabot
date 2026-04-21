@@ -165,6 +165,13 @@ export type SDKMessage = {
 export interface ExecutionHandle {
   stream: AsyncGenerator<SDKMessage>;
   sendAnswer(toolUseId: string, sessionId: string, answerText: string): void;
+  /**
+   * Resolve a pending AskUserQuestion PreToolUse hook with the user's answers.
+   * Use this instead of sendAnswer when running in bypassPermissions mode —
+   * sendAnswer enqueues a tool_result that never reaches the SDK because the
+   * internal permission check short-circuits before auto-allow.
+   */
+  resolveQuestion(toolUseId: string, answers: Record<string, string>): void;
   finish(): void;
 }
 
@@ -283,6 +290,59 @@ export class ClaudeExecutor {
       queryOptions.allowedTools = options.allowedTools;
     }
 
+    // AskUserQuestion PreToolUse hook: the SDK marks AskUserQuestion as
+    // requiresUserInteraction=true, so in bypassPermissions mode it is denied
+    // before auto-allow can fire. We intercept the PreToolUse event, pause until
+    // the bridge collects the user's answers, then return them as updatedInput.
+    // Providing updatedInput satisfies the interaction requirement and the SDK
+    // resolves the tool call with {answers} filled in.
+    const pendingQuestionResolvers = new Map<string, (answers: Record<string, string>) => void>();
+
+    const askUserQuestionHook = async (
+      input: { hook_event_name: string; tool_name: string; tool_input: unknown; tool_use_id: string },
+      _toolUseId: string | undefined,
+      { signal }: { signal: AbortSignal },
+    ): Promise<Record<string, unknown>> => {
+      const toolInput = input.tool_input as Record<string, unknown>;
+      const id = input.tool_use_id;
+
+      const answers = await new Promise<Record<string, string>>((resolve) => {
+        pendingQuestionResolvers.set(id, resolve);
+
+        // Safety timeout: auto-resolve with empty answers after 6 minutes
+        // (slightly longer than bridge's 5-minute QUESTION_TIMEOUT_MS) to
+        // prevent indefinite hang if the bridge fails to deliver an answer.
+        const timeout = setTimeout(() => {
+          if (pendingQuestionResolvers.delete(id)) {
+            logger.warn({ toolUseId: id }, 'AskUserQuestion hook timed out after 6 minutes — returning empty answers');
+            resolve({});
+          }
+        }, 6 * 60 * 1000);
+
+        const onAbort = () => {
+          clearTimeout(timeout);
+          pendingQuestionResolvers.delete(id);
+          resolve({});
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          updatedInput: { ...toolInput, answers },
+        },
+      };
+    };
+
+    queryOptions.hooks = {
+      PreToolUse: [{
+        matcher: 'AskUserQuestion',
+        hooks: [askUserQuestionHook as any],
+      }],
+    };
+
     const stream = query({
       prompt: inputQueue,
       options: queryOptions as any,
@@ -344,6 +404,29 @@ export class ClaudeExecutor {
           session_id: sid,
         };
         inputQueue.enqueue(answerMessage);
+      },
+      resolveQuestion: (toolUseId: string, answers: Record<string, string>) => {
+        const resolver = pendingQuestionResolvers.get(toolUseId);
+        if (resolver) {
+          pendingQuestionResolvers.delete(toolUseId);
+          logger.info({ toolUseId, answerCount: Object.keys(answers).length }, 'Resolving AskUserQuestion hook');
+          resolver(answers);
+        } else {
+          // Fallback: enqueue tool_result via inputQueue. Used if the hook
+          // didn't capture this toolUseId (e.g., legacy sendAnswer path) or
+          // the SDK version differs.
+          logger.warn({ toolUseId }, 'No pending AskUserQuestion resolver — falling back to sendAnswer path');
+          const answerMessage: SDKUserMessage = {
+            type: 'user',
+            message: {
+              role: 'user' as const,
+              content: [{ type: 'tool_result', tool_use_id: toolUseId, content: JSON.stringify({ answers }) }],
+            },
+            parent_tool_use_id: null,
+            session_id: '',
+          };
+          inputQueue.enqueue(answerMessage);
+        }
       },
       finish: () => {
         inputQueue.finish();
