@@ -57,6 +57,8 @@ export interface BotConfig extends BotConfigBase {
     appId: string;
     appSecret: string;
   };
+  /** When true, respond to all messages in group chats without requiring @mention. */
+  groupNoMention?: boolean;
 }
 
 /** Telegram bot config (extends base with Telegram credentials). */
@@ -148,6 +150,8 @@ export interface FeishuBotJsonEntry {
   outputsBaseDir?: string;
   downloadsDir?: string;
   approval?: ApprovalConfigJsonEntry;
+  /** When true, respond to all messages in group chats without requiring @mention. */
+  groupNoMention?: boolean;
 }
 
 function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
@@ -159,6 +163,7 @@ function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
     ...(entry.maxConcurrentTasks != null ? { maxConcurrentTasks: entry.maxConcurrentTasks } : {}),
     ...(entry.budgetLimitDaily != null ? { budgetLimitDaily: entry.budgetLimitDaily } : {}),
     ...(entry.ttsVoice ? { ttsVoice: entry.ttsVoice } : {}),
+    ...(entry.groupNoMention ? { groupNoMention: true } : {}),
     feishu: {
       appId: entry.feishuAppId,
       appSecret: entry.feishuAppSecret,
