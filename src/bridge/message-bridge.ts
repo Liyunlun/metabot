@@ -137,6 +137,8 @@ export interface ActivityEventData {
 export class MessageBridge {
   private engine: Engine;
   private executor: Executor;
+  /** Lazy per-engine cache so a session override doesn't pay instantiation cost each turn. */
+  private engineCache = new Map<EngineName, { engine: Engine; executor: Executor }>();
   private sessionManager: SessionManager;
   private outputsManager: OutputsManager;
   private audit: AuditLogger;
@@ -161,6 +163,8 @@ export class MessageBridge {
   ) {
     this.engine = createEngine(config, logger);
     this.executor = this.engine.createExecutor();
+    const defaultEngineName = resolveEngineName(config);
+    this.engineCache.set(defaultEngineName, { engine: this.engine, executor: this.executor });
     this.sessionManager = new SessionManager(config.claude.defaultWorkingDirectory, logger, config.name);
     this.outputsManager = new OutputsManager(config.claude.outputsBaseDir, logger);
     this.audit = new AuditLogger(logger);
@@ -224,6 +228,26 @@ export class MessageBridge {
   /** Emit an activity event if a listener is registered. */
   private emitActivity(event: ActivityEventData): void {
     try { this.onActivityEvent?.(event); } catch { /* ignore */ }
+  }
+
+  /**
+   * Pick the executor for a chat based on its session engine override
+   * (set via `/model claude` or `/model kimi`), falling back to the bot's
+   * configured engine. Executors are cached per-engine so repeated turns
+   * on the same engine don't re-instantiate the SDK wrapper.
+   */
+  private executorForChat(chatId: string): Executor {
+    const session = this.sessionManager.getSession(chatId);
+    const name: EngineName = session.engine ?? resolveEngineName(this.config);
+    let entry = this.engineCache.get(name);
+    if (!entry) {
+      const engine = createEngine(this.config, this.logger, name);
+      const executor = engine.createExecutor();
+      entry = { engine, executor };
+      this.engineCache.set(name, entry);
+      this.logger.info({ engine: name, chatId }, 'Instantiated engine on demand for session override');
+    }
+    return entry.executor;
   }
 
   /** Inject the doc sync service for /sync commands. */
@@ -804,7 +828,7 @@ export class MessageBridge {
     });
 
     // Start multi-turn execution
-    let executionHandle = this.executor.startExecution({
+    let executionHandle = this.executorForChat(chatId).startExecution({
       prompt,
       cwd,
       sessionId: session.sessionId,
@@ -1094,7 +1118,7 @@ export class MessageBridge {
         await this.sender.updateCard(messageId, { ...lastState, responseText: '_Session expired, retrying..._' });
 
         // Retry execution without sessionId
-        const retryHandle = this.executor.startExecution({
+        const retryHandle = this.executorForChat(chatId).startExecution({
           prompt, cwd, sessionId: undefined, abortController, outputsDir, apiContext, model: session.model,
         });
         executionHandle.finish();
@@ -1120,7 +1144,7 @@ export class MessageBridge {
         lastState = { ...lastState, status: 'running', errorMessage: undefined };
         await this.sender.updateCard(messageId, { ...lastState, responseText: '_Context limit reached, starting fresh session..._' });
 
-        const retryHandle = this.executor.startExecution({
+        const retryHandle = this.executorForChat(chatId).startExecution({
           prompt, cwd, sessionId: undefined, abortController, outputsDir, apiContext, model: session.model,
         });
         executionHandle.finish();
@@ -1211,7 +1235,7 @@ export class MessageBridge {
         await this.sender.updateCard(messageId, { ...lastState, status: 'running', responseText: retryMsg });
 
         try {
-          const retryHandle = this.executor.startExecution({
+          const retryHandle = this.executorForChat(chatId).startExecution({
             prompt, cwd, sessionId: undefined, abortController, outputsDir, apiContext, model: session.model,
           });
           executionHandle.finish();
@@ -1422,7 +1446,7 @@ export class MessageBridge {
       logger: this.logger,
     });
 
-    let executionHandle = this.executor.startExecution({
+    let executionHandle = this.executorForChat(chatId).startExecution({
       prompt,
       cwd,
       sessionId: session.sessionId,
@@ -1642,7 +1666,7 @@ export class MessageBridge {
           await this.sender.updateCard(messageId, { ...lastState, status: 'running', responseText: retryMsg });
         }
 
-        const retryHandle = this.executor.startExecution({
+        const retryHandle = this.executorForChat(chatId).startExecution({
           prompt, cwd, sessionId: undefined, abortController, outputsDir, apiContext, model: options.model ?? session.model,
         });
         executionHandle.finish();
@@ -1744,7 +1768,7 @@ export class MessageBridge {
         }
 
         try {
-          const retryHandle = this.executor.startExecution({
+          const retryHandle = this.executorForChat(chatId).startExecution({
             prompt, cwd, sessionId: undefined, abortController, outputsDir, apiContext, model: options.model ?? session.model,
           });
           executionHandle.finish();
