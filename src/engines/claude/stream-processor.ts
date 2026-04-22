@@ -1,5 +1,5 @@
 import type { SDKMessage } from './executor.js';
-import type { CardState, ToolCall, PendingQuestion, SubagentTask } from '../feishu/card-builder.js';
+import type { CardState, ToolCall, PendingQuestion, SubagentTask } from '../../feishu/card-builder.js';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff']);
 
