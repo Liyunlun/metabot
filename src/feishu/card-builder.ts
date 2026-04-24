@@ -1,5 +1,13 @@
 // Re-export shared types so existing imports from this module continue to work
-export type { CardStatus, ToolCall, PendingQuestion, CardState, SubagentTask } from '../types.js';
+export type {
+  CardStatus,
+  ToolCall,
+  PendingQuestion,
+  CardState,
+  SubagentTask,
+  BackgroundEvent,
+  BackgroundTaskStatus,
+} from '../types.js';
 import type { CardState, CardStatus } from '../types.js';
 
 const STATUS_CONFIG: Record<CardStatus, { color: string; title: string; icon: string }> = {
@@ -11,6 +19,18 @@ const STATUS_CONFIG: Record<CardStatus, { color: string; title: string; icon: st
 };
 
 export const MAX_CONTENT_LENGTH = 28000;
+
+const BG_ICON: Record<'running' | 'completed' | 'failed' | 'stopped', string> = {
+  running: '⏳',
+  completed: '✅',
+  failed: '❌',
+  stopped: '⏹️',
+};
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + '…';
+}
 
 /**
  * Split long text into chunks that each fit within MAX_CONTENT_LENGTH.
@@ -315,6 +335,21 @@ export function buildCard(state: CardState): string {
           content: sanitizeLarkMd(detailLines.join('\n\n')),
         },
       ],
+    });
+  }
+
+  // Background tasks (Monitor, etc.) — show live stdout events / final status
+  if (state.backgroundEvents && state.backgroundEvents.length > 0) {
+    const lines = state.backgroundEvents.map((ev) => {
+      const icon = BG_ICON[ev.status];
+      const shortId = ev.taskId.slice(0, 6);
+      const desc = truncate(ev.description, 60);
+      const last = ev.lastEvent ? ` — _${truncate(ev.lastEvent, 140)}_` : '';
+      return `${icon} **${desc}** \`${shortId}\`${last}`;
+    });
+    elements.push({
+      tag: 'markdown',
+      content: '📡 **Background**\n' + lines.join('\n'),
     });
   }
 
