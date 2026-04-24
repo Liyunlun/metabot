@@ -1,6 +1,6 @@
 # MetaBot
 
-**在飞书 / Telegram / 微信上用手机控制 Claude Code 或 Kimi Code — 写代码、管 Agent、自动化一切。**
+**在飞书 / Telegram / 微信上用手机控制 Claude Code、Kimi Code 或 Codex CLI — 写代码、管 Agent、自动化一切。**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/xvirobotics/metabot/ci.yml?branch=main&style=flat-square)](https://github.com/xvirobotics/metabot/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
@@ -38,7 +38,10 @@ MetaBot 不是只绑定一家 — 两大顶级 AI 编码 Agent 都内置原生�
 ```json
 { "name": "bulma", "engine": "kimi",   "kimi": { "thinking": true } }
 { "name": "goku",  "engine": "claude" }
+{ "name": "vegeta", "engine": "codex", "codex": { "model": "gpt-5.4-codex" } }
 ```
+
+Codex 支持通过本机 `codex exec --json` CLI 接入，并使用 `codex exec resume` 续接聊天会话。启动 MetaBot 前，请先执行 `codex login` 或配置好 Codex API key/profile。
 
 前端 Bot 用 Claude、后端 Bot 用 Kimi？完全可以。Agent 总线让它们互相委派任务，对面跑什么引擎对调用方透明。
 
