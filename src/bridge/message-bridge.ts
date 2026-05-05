@@ -250,6 +250,37 @@ export class MessageBridge {
     return entry.executor;
   }
 
+  /**
+   * Session ids and model overrides are engine-specific. If a bot's default
+   * engine changes between restarts, discard the old per-chat state before the
+   * next execution so another engine does not try to resume it.
+   */
+  private prepareSessionForExecution(chatId: string): { session: ReturnType<SessionManager['getSession']>; engineName: EngineName } {
+    const session = this.sessionManager.getSession(chatId);
+    const engineName: EngineName = session.engine ?? resolveEngineName(this.config);
+
+    if (session.sessionId && session.sessionIdEngine && session.sessionIdEngine !== engineName) {
+      this.logger.info(
+        { chatId, sessionIdEngine: session.sessionIdEngine, engine: engineName },
+        'Clearing session id from a different engine',
+      );
+      this.sessionManager.resetSession(chatId);
+    }
+
+    if (session.model && session.modelEngine && session.modelEngine !== engineName) {
+      this.logger.info(
+        { chatId, modelEngine: session.modelEngine, engine: engineName },
+        'Clearing model override from a different engine',
+      );
+      this.sessionManager.setSessionModel(chatId, undefined);
+    }
+
+    return {
+      session: this.sessionManager.getSession(chatId),
+      engineName,
+    };
+  }
+
   /** Inject the doc sync service for /sync commands. */
   setDocSync(docSync: DocSync): void {
     this.commandHandler.setDocSync(docSync);
@@ -701,10 +732,10 @@ export class MessageBridge {
 
   private async executeQuery(msg: IncomingMessage): Promise<void> {
     const { userId, chatId, text, imageKey, fileKey, fileName, messageId: msgId } = msg;
-    const session = this.sessionManager.getSession(chatId);
+    const { session, engineName } = this.prepareSessionForExecution(chatId);
     const cwd = session.workingDirectory;
     const abortController = new AbortController();
-    const activeEngine = resolveEngineName(this.config);
+    const activeEngine = engineName;
     const enginePromptText = normalizePromptForEngine(text, activeEngine);
 
     // Prepare downloads directory (bot-isolated)
@@ -926,8 +957,8 @@ export class MessageBridge {
 
             // Update session ID if discovered
             const newSessionId = processor.getSessionId();
-            if (newSessionId && newSessionId !== session.sessionId) {
-              this.sessionManager.setSessionId(chatId, newSessionId);
+            if (newSessionId && (newSessionId !== session.sessionId || session.sessionIdEngine !== engineName)) {
+              this.sessionManager.setSessionId(chatId, newSessionId, engineName);
             }
 
             // Check if we hit a waiting_for_input state
@@ -1130,7 +1161,7 @@ export class MessageBridge {
           const state = processor.processMessage(message);
           lastState = state;
           const newSid = processor.getSessionId();
-          if (newSid) this.sessionManager.setSessionId(chatId, newSid);
+          if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
           if (state.status === 'complete' || state.status === 'error') break;
           rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
         }
@@ -1165,7 +1196,7 @@ export class MessageBridge {
             }
           }
           const newSid = processor.getSessionId();
-          if (newSid) this.sessionManager.setSessionId(chatId, newSid);
+          if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
           if (state.status === 'complete' || state.status === 'error') break;
           if (needsRecreate && state.responseText) {
             await rateLimiter.flush();
@@ -1256,7 +1287,7 @@ export class MessageBridge {
               }
             }
             const newSid = processor.getSessionId();
-            if (newSid) this.sessionManager.setSessionId(chatId, newSid);
+            if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
             if (state.status === 'complete' || state.status === 'error') break;
             if (needsRecreate && state.responseText) {
               await rateLimiter.flush();
@@ -1391,7 +1422,7 @@ export class MessageBridge {
       });
     }
 
-    const session = this.sessionManager.getSession(chatId);
+    const { session, engineName } = this.prepareSessionForExecution(chatId);
     const cwd = session.workingDirectory;
     const abortController = new AbortController();
 
@@ -1533,8 +1564,8 @@ export class MessageBridge {
             }
 
             const newSessionId = processor.getSessionId();
-            if (newSessionId && newSessionId !== session.sessionId) {
-              this.sessionManager.setSessionId(chatId, newSessionId);
+            if (newSessionId && (newSessionId !== session.sessionId || session.sessionIdEngine !== engineName)) {
+              this.sessionManager.setSessionId(chatId, newSessionId, engineName);
             }
 
             if (state.status === 'waiting_for_input' && state.pendingQuestion) {
@@ -1687,7 +1718,7 @@ export class MessageBridge {
             }
           }
           const newSid = processor.getSessionId();
-          if (newSid) this.sessionManager.setSessionId(chatId, newSid);
+          if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
           if (state.status === 'complete' || state.status === 'error') break;
           if (sendCards && messageId) {
             if (needsRecreate && state.responseText) {
@@ -1789,7 +1820,7 @@ export class MessageBridge {
               }
             }
             const newSid = processor.getSessionId();
-            if (newSid) this.sessionManager.setSessionId(chatId, newSid);
+            if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
             if (state.status === 'complete' || state.status === 'error') break;
             if (sendCards && messageId) {
               if (needsRecreate && state.responseText) {
@@ -2207,7 +2238,7 @@ export class MessageBridge {
 
 export function isStaleSessionError(errorMessage?: string): boolean {
   if (!errorMessage) return false;
-  return /no conversation found|conversation not found|session id|invalid session|each tool_use must have a single result|multiple tool_result blocks/i.test(errorMessage);
+  return /no conversation found|conversation not found|session id|invalid session|thread\/resume.*failed|no rollout found|each tool_use must have a single result|multiple tool_result blocks/i.test(errorMessage);
 }
 
 export function normalizePromptForEngine(text: string, engine: EngineName): string {
