@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 /** Agent engine backing a bot. `claude` uses Claude Code; `kimi` uses Kimi Code (Phase 2). */
-export type EngineName = 'claude' | 'kimi';
+export type EngineName = 'claude' | 'kimi' | 'codex';
 
 /** Shared config fields used by MessageBridge and Executors (platform-agnostic). */
 export interface BotConfigBase {

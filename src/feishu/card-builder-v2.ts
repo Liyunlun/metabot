@@ -130,9 +130,16 @@ export function buildCardV2(state: CardState): string {
     elements.push({ tag: 'hr' });
   }
 
-  // Background tasks (Monitor, etc.)
-  if (state.backgroundEvents && state.backgroundEvents.length > 0) {
-    const lines = state.backgroundEvents.map((ev) => {
+  // Background tasks (Monitor, etc.) — field added in upstream #217 (Batch 5).
+  // Guarded so the v2 builder compiles before that lands.
+  const bgEvents = (state as unknown as { backgroundEvents?: Array<{
+    status: 'running' | 'completed' | 'failed' | 'stopped';
+    taskId: string;
+    description: string;
+    lastEvent?: string;
+  }> }).backgroundEvents;
+  if (bgEvents && bgEvents.length > 0) {
+    const lines = bgEvents.map((ev) => {
       const icon    = BG_ICON[ev.status];
       const shortId = ev.taskId.slice(0, 6);
       const desc    = truncate(ev.description, 60);

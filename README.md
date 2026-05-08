@@ -1,28 +1,104 @@
-# MetaBot
+<div align="center">
 
-**在飞书 / Telegram / 微信上用手机控制 Claude Code — 写代码、管 Agent、自动化一切。**
+# 🤖 MetaBot
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Liyunlun/metabot/ci.yml?branch=main&style=flat-square)](https://github.com/Liyunlun/metabot/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+### 在飞书 / Telegram / 微信上用手机控制 Claude Code、Kimi Code 或 Codex CLI
 
-中文 | [English](README_EN.md) | [文档站](https://xvirobotics.com/metabot/zh/)
+*写代码 · 管 Agent · 自动化一切*
 
-> 在飞书中设定一个每天早上9点自动搜索 AI 新闻并保存到 MetaMemory 的定时任务 — Thinking → Running → Complete，全程流式展示。
+<p>
+  <a href="https://github.com/xvirobotics/metabot/actions"><img src="https://img.shields.io/github/actions/workflow/status/xvirobotics/metabot/ci.yml?branch=main&style=for-the-badge&label=CI&logo=github" alt="CI"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/xvirobotics/metabot"><img src="https://img.shields.io/github/stars/xvirobotics/metabot?style=for-the-badge&logo=github" alt="Stars"></a>
+  <a href="https://github.com/xvirobotics/metabot/network/members"><img src="https://img.shields.io/github/forks/xvirobotics/metabot?style=for-the-badge&logo=github" alt="Forks"></a>
+</p>
+
+<p>
+  <a href="https://github.com/anthropics/claude-code"><img src="https://img.shields.io/badge/Engine-Claude_Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code"></a>
+  <a href="https://platform.moonshot.ai"><img src="https://img.shields.io/badge/Engine-Kimi_Code-1A73E8?style=for-the-badge&logoColor=white" alt="Kimi Code"></a>
+  <a href="https://github.com/openai/codex"><img src="https://img.shields.io/badge/Engine-Codex_CLI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="Codex CLI"></a>
+  <img src="https://img.shields.io/badge/Subscription-Native-22C55E?style=for-the-badge&logo=key&logoColor=white" alt="Native Subscription">
+  <img src="https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js">
+</p>
+
+<p>
+  <a href="https://feishu.cn"><img src="https://img.shields.io/badge/飞书_/_Lark-00D6B9?style=for-the-badge&logo=lark&logoColor=white" alt="Feishu/Lark"></a>
+  <a href="https://telegram.org"><img src="https://img.shields.io/badge/Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram"></a>
+  <a href="https://ilinkai.weixin.qq.com"><img src="https://img.shields.io/badge/微信_ClawBot-07C160?style=for-the-badge&logo=wechat&logoColor=white" alt="WeChat"></a>
+  <img src="https://img.shields.io/badge/Web_UI-61DAFB?style=for-the-badge&logo=react&logoColor=white" alt="Web UI">
+</p>
+
+**中文** · [English](README_EN.md) · [📚 文档站](https://xvirobotics.com/metabot/zh/)
+
+</div>
+
+> 支持 **Claude Code**、**Kimi Code** 和 **Codex CLI** 三大引擎 — 订阅 / API Key 任你选，每个 Bot 可独立选引擎。
 
 ![MetaBot Demo](resources/metabot-demo.gif)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Liyunlun/metabot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xvirobotics/metabot/main/install.sh | bash
 ```
 
-安装器引导一切：工作目录 → Claude 认证 → IM 平台 → PM2 自动启动。**5 分钟上手。**
+安装器引导一切：工作目录 → **引擎选择（Claude / Kimi / Codex）** → 订阅登录 → IM 平台 → PM2 自动启动。**5 分钟上手。**
+
+> 自定义安装目录(默认 `~/metabot`)：`curl ... | bash -s -- --dir /opt/metabot`,或 `METABOT_HOME=/opt/metabot bash install.sh`。Windows: `.\install.ps1 -Dir C:\opt\metabot`。
+
+---
+
+## 三引擎：Claude Code ✕ Kimi Code ✕ Codex CLI 并列一等支持
+
+MetaBot 不是只绑定一家 — 三大顶级 AI 编码 Agent 都内置原生支持，**你的订阅直接用**。
+
+| | **Claude Code**（Anthropic） | **Kimi Code**（Moonshot） | **Codex CLI**（OpenAI） |
+|---|---|---|---|
+| **订阅直连** | ✅ `claude login` OAuth | ✅ `kimi login` | ✅ `codex login`，走 ChatGPT 订阅 |
+| **API Key 兜底** | ✅ `ANTHROPIC_API_KEY` / 第三方 Anthropic 兼容端 | ✅ Moonshot API Key | ✅ `OPENAI_API_KEY` / Codex profile |
+| **上下文窗口** | 200k（Opus/Sonnet 可选 1M） | 256k（kimi-for-coding） | 400k（gpt-5.x-codex） |
+| **工具能力** | Read/Write/Edit/Bash/Glob/Grep/WebSearch/MCP | 同上（Kimi CLI 原生 + `.claude/skills/` 自动发现） | Codex CLI 原生工具链 + `.codex/skills/` 自动发现 |
+| **自主运行模式** | `bypassPermissions` | `yoloMode`（等价） | 默认 `--sandbox danger-full-access`，避免无 user namespace 环境下的 `bwrap` 失败 |
+| **子 Agent** | `.claude/agents/*.md` 自动加载 | 仅内置 `default` / `okabe` | 暂不支持项目子 Agent；把角色/路由写进 `AGENTS.md` |
+| **工作区说明** | `CLAUDE.md` | `AGENTS.md`（安装器自动建软链） | `AGENTS.md`（Codex 官方约定） |
+
+**配置只需一行** — 每个 Bot 独立选引擎：
+```json
+{ "name": "bulma", "engine": "kimi",   "kimi": { "thinking": true } }
+{ "name": "goku",  "engine": "claude" }
+{ "name": "vegeta", "engine": "codex", "codex": { "model": "gpt-5.4-codex" } }
+```
+
+Codex 支持通过本机 `codex exec --json` CLI 接入，并使用 `codex exec resume` 续接聊天会话。启动 MetaBot 前，请先执行 `codex login` 或配置好 Codex API key/profile。MetaBot 会把 `/metaskill ...` 等飞书 slash skill 调用转成 Codex 的 `$metaskill ...` 显式技能调用。
+
+### Codex 迁移：复用 `.claude` 配置
+
+Claude/Kimi 和 Codex 的发现路径不同。MetaBot 安装、更新和 Skill Hub 安装时会自动镜像内置 skills：
+
+| 内容 | Claude / Kimi | Codex |
+|------|---------------|-------|
+| 工作区说明 | `CLAUDE.md` | `AGENTS.md` |
+| Skills | `.claude/skills/<name>/SKILL.md` | `.codex/skills/<name>/SKILL.md` |
+| 子 Agent | `.claude/agents/*.md` | 不自动加载；迁移为 `AGENTS.md` 里的角色/路由说明 |
+
+已有项目可以直接让 Codex 帮你迁移：
+
+```text
+/model codex
+请根据当前项目的 .claude 配置，为 Codex 创建对应的 .codex/skills 和 AGENTS.md：
+- 把 .claude/skills/* 镜像到 .codex/skills/*
+- 根据 CLAUDE.md 生成或更新 AGENTS.md
+- 如果存在 .claude/agents/*.md，把这些 subagent 的角色、路由表和工作流整合进 AGENTS.md
+```
+
+如果你的宿主机禁用了 unprivileged user namespace，Codex CLI 的 `workspace-write` sandbox 可能在命令执行前报 `bwrap: No permissions to create a new namespace`。MetaBot 的 Codex 默认改用 `danger-full-access` 避开这个问题；需要更强隔离时可以通过 `CODEX_SANDBOX` 或 `codex.sandbox` 显式覆盖。
+
+前端 Bot 用 Claude、后端 Bot 用 Kimi？完全可以。Agent 总线让它们互相委派任务，对面跑什么引擎对调用方透明。
 
 ---
 
 ## 你能用它做什么
 
-- **手机写代码** — 地铁上用飞书给 Claude Code 发消息，它帮你改 bug、提 PR、跑测试
-- **多 Agent 协作** — 前端 Bot、后端 Bot、运维 Bot，各自独立工作空间，通过 Agent 总线互相委派任务
+- **手机写代码** — 地铁上用飞书给 Claude Code / Kimi Code / Codex CLI 发消息，它帮你改 bug、提 PR、跑测试
+- **多 Agent 协作** — 前端 Bot、后端 Bot、运维 Bot，各自独立工作空间（甚至独立引擎），通过 Agent 总线互相委派任务
 - **知识自生长** — Agent 把学到的东西存入 MetaMemory，组织每天都在变聪明，无需重新训练
 - **自动化流水线** — "每天早上9点搜 AI 新闻，总结 Top 5，存档" — 一句话搞定
 - **语音助手（Jarvis 模式）** — AirPods 说 "Hey Siri, Jarvis"，免手免屏语音控制任意 Agent
@@ -30,14 +106,16 @@ curl -fsSL https://raw.githubusercontent.com/Liyunlun/metabot/main/install.sh | 
 
 ## 为什么选 MetaBot
 
-| | MetaBot | 直接用 Claude Code | Dify / Coze |
+| | MetaBot | 直接用 Claude / Kimi / Codex CLI | Dify / Coze |
 |---|---|---|---|
 | **手机控制** | 飞书/TG/微信随时随地 | 只能在终端 | 有，但不能跑代码 |
-| **代码能力** | 完整 Claude Code（Read/Write/Edit/Bash/MCP） | 完整 | 无，只能调 API |
+| **引擎选择** | Claude ✕ Kimi ✕ Codex 三引擎 | 各自单一 | 无，只能调 API |
+| **订阅直连** | 三家原生订阅都直接用 | 一次只能登一个 | 不支持订阅 |
+| **代码能力** | 完整 Agent SDK（Read/Write/Edit/Bash/MCP） | 完整 | 无 |
 | **多 Agent** | Agent 总线 + 任务委派 + 运行时创建 | 单会话 | 有，但封闭生态 |
 | **共享记忆** | MetaMemory 全文搜索 + 自动同步飞书知识库 | 无 | 无 |
 | **定时任务** | Cron 调度，跨重启持久化 | 无 | 有 |
-| **自主运行** | bypassPermissions，全自动 | 需要人工确认 | 受限于 workflow |
+| **自主运行** | bypassPermissions / yoloMode，全自动 | 需要人工确认 | 受限于 workflow |
 | **开源** | MIT，完全可控 | CLI 开源 | 闭源 SaaS |
 
 ## 工作原理
@@ -45,13 +123,17 @@ curl -fsSL https://raw.githubusercontent.com/Liyunlun/metabot/main/install.sh | 
 ![MetaBot 架构图](resources/metabot.png)
 
 ```
-飞书/TG/微信 → IM Bridge → Claude Code Agent SDK → 流式卡片更新
+飞书/TG/微信 → IM Bridge → Engine Router ──┬─→ Claude Code Agent SDK
+                                            ├─→ Kimi Agent SDK（@moonshot-ai/kimi-agent-sdk）
+                                            └─→ Codex CLI（codex exec --json 子进程）
                               ↕
                     MetaMemory（共享知识库）
-                    MetaSkill（Agent 工厂）
+                    MetaSkill（Agent 工厂，产出 CLAUDE.md + AGENTS.md）
                     定时调度器（Cron 任务）
-                    Agent 总线（跨 Bot 通信）
+                    Agent 总线（跨 Bot 通信，引擎无关）
 ```
+
+引擎层已抽象 —— Kimi 事件流和 Codex JSONL 都被翻译成 Claude 形状的 `SDKMessage`，流式卡片、工具调用追踪、MetaMemory/调度/Agent 总线在三种引擎下表现一致。
 
 ## 多端接入
 
@@ -92,8 +174,8 @@ MetaBot 支持 4 种方式与你的 Agent 团队交互：
 
 | 组件 | 一句话说明 |
 |------|-----------|
-| **Claude Code 内核** | 每个 Bot 都是完整的 Claude Code — Read/Write/Edit/Bash/Glob/Grep/WebSearch/MCP，`bypassPermissions` 全自动 |
-| **MetaSkill** | Agent 工厂。`/metaskill` 一键生成 `.claude/` Agent 团队（orchestrator + 专家 + reviewer） |
+| **三引擎内核** | 每个 Bot 独立选 Claude Code / Kimi Code / Codex CLI — 完整工具链（Read/Write/Edit/Bash/Glob/Grep/WebSearch/MCP），自主模式运行 |
+| **MetaSkill** | Agent 工厂。`/metaskill` 一键生成可迁移的 Agent 团队（`CLAUDE.md` / `AGENTS.md` + skills） |
 | **MetaMemory** | 内嵌 SQLite 知识库，全文搜索，Web UI，变更自动同步到飞书知识库 |
 | **IM Bridge** | 飞书、Telegram、微信（含手机端）对话任意 Agent，流式卡片 + 工具调用追踪 |
 | **Agent 总线** | Agent 通过 `mb talk` 互相对话，运行时创建/删除 Bot |
@@ -322,6 +404,7 @@ MetaBot 以 `bypassPermissions` 模式运行 Claude Code — 无交互式确认�
 | `/help` | 帮助 |
 
 > **模型切换**：每个会话可独立设置模型。在模型名后加 `[1m]` 可启用 1M 上下文窗口（仅 Opus 4.7/4.6、Sonnet 4.6 支持），例如 `/model claude-opus-4-7[1m]`。OAuth/Pro-Max 登录用户 SDK 会丢弃 beta flag，`[1m]` 后缀是唯一可靠的 1M 开启方式。
+> **Codex Skill 调用**：飞书里仍然可以发 `/metaskill ...`。当当前会话是 Codex 引擎时，MetaBot 会自动转换为 Codex 识别的 `$metaskill ...`。
 
 <details>
 <summary><strong>API 参考</strong></summary>
@@ -397,7 +480,7 @@ CLI 支持连接远程 MetaBot/MetaMemory 服务器，在 `~/.metabot/.env` 配�
 <summary><strong>手动安装</strong></summary>
 
 ```bash
-git clone https://github.com/Liyunlun/metabot.git
+git clone https://github.com/xvirobotics/metabot.git
 cd metabot && npm install
 cp bots.example.json bots.json   # 编辑 Bot 配置
 cp .env.example .env              # 编辑全局设置
@@ -429,6 +512,10 @@ npm run build        # TypeScript 编译
 MetaBot 由 [XVI Robotics](https://xvirobotics.com) 打造（人形机器人大脑公司）。我们在内部用 MetaBot 把公司打造成 **Agent Native 组织** —— 一个小团队的人类，监督自我进化的 AI Agent。
 
 我们开源它，因为我们相信这是未来公司的运行方式。
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=xvirobotics/metabot&type=Date)](https://star-history.com/#xvirobotics/metabot&Date)
 
 ## License
 

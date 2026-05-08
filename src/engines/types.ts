@@ -9,7 +9,7 @@ import type {
 } from './claude/executor.js';
 import type { StreamProcessor } from './claude/stream-processor.js';
 
-export type EngineName = 'claude' | 'kimi';
+export type EngineName = 'claude' | 'kimi' | 'codex';
 
 /**
  * An Engine is a programmable agent backend (Claude Code, Kimi Code, …).
