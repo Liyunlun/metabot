@@ -285,6 +285,73 @@ describe('StreamProcessor', () => {
     expect(p.drainSdkHandledTools()).toHaveLength(0);
   });
 
+  it('getFullTranscript captures turns, tool outputs, and result', () => {
+    const p = new StreamProcessor('do thing');
+    // Assistant turn with text + tool_use + tool_result
+    p.processMessage(msg({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: {
+        content: [
+          { type: 'text', text: 'Running the command now.' },
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'echo hi' } },
+        ],
+      },
+    }));
+    p.processMessage(msg({
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'tool_result', content: 'hi\n' }] },
+    }));
+    p.processMessage(msg({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: 'Done.' }] },
+    }));
+    p.processMessage(msg({
+      type: 'result',
+      subtype: 'success',
+      result: 'Task complete — 1 command run.',
+    }));
+
+    const transcript = p.getFullTranscript();
+    expect(transcript).toContain('Running the command now.');
+    expect(transcript).toContain('[Tool: Bash]');
+    expect(transcript).toContain('hi\n');
+    expect(transcript).toContain('Done.');
+    expect(transcript).toContain('[Result]');
+    expect(transcript).toContain('Task complete — 1 command run.');
+  });
+
+  it('getFullTranscript returns empty when no content captured', () => {
+    const p = new StreamProcessor('hi');
+    p.processMessage(msg({ type: 'system', session_id: 'sess' }));
+    expect(p.getFullTranscript()).toBe('');
+  });
+
+  it('getFullTranscript includes in-progress streaming text not yet flushed as a turn', () => {
+    const p = new StreamProcessor('hi');
+    p.processMessage(msg({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Partial output' } },
+    }));
+    expect(p.getFullTranscript()).toBe('Partial output');
+  });
+
+  it('getFullTranscript omits result summary when it duplicates last turn text', () => {
+    const p = new StreamProcessor('hi');
+    p.processMessage(msg({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: 'The answer is 42.' }] },
+    }));
+    p.processMessage(msg({ type: 'result', subtype: 'success', result: 'The answer is 42.' }));
+    const transcript = p.getFullTranscript();
+    expect(transcript).toBe('The answer is 42.');
+    expect(transcript).not.toContain('[Result]');
+  });
+
   it('marks all tools as done on result', () => {
     const p = new StreamProcessor('hi');
     p.processMessage(msg({

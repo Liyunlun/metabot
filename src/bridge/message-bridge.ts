@@ -1708,12 +1708,19 @@ export class MessageBridge {
       metrics.observeHistogram('metabot_task_duration_seconds', durationMs / 1000);
       if (lastState.costUsd) metrics.observeHistogram('metabot_task_cost_usd', lastState.costUsd);
 
+      // Use the full session transcript (turns + tool outputs + result) for the
+      // bus reply, falling back to the live responseText if the session ended
+      // before any content was captured. Without this, sessions that end on
+      // tool calls return an empty responseText even though the chat shows the
+      // full conversation.
+      const fullResponseText = processor.getFullTranscript() || lastState.responseText;
+
       // Record in cross-platform session registry
-      this.recordSession(chatId, prompt, lastState.responseText, processor.getSessionId(), lastState.costUsd, durationMs);
+      this.recordSession(chatId, prompt, fullResponseText, processor.getSessionId(), lastState.costUsd, durationMs);
 
       return {
         success: lastState.status === 'complete',
-        responseText: lastState.responseText,
+        responseText: fullResponseText,
         sessionId: processor.getSessionId(),
         costUsd: lastState.costUsd,
         durationMs: lastState.durationMs,
@@ -1786,7 +1793,7 @@ export class MessageBridge {
 
           return {
             success: lastState.status === 'complete',
-            responseText: lastState.responseText,
+            responseText: processor.getFullTranscript() || lastState.responseText,
             sessionId: processor.getSessionId(),
             costUsd: lastState.costUsd,
             durationMs: lastState.durationMs,
@@ -1829,7 +1836,7 @@ export class MessageBridge {
 
       return {
         success: false,
-        responseText: lastState.responseText,
+        responseText: processor.getFullTranscript() || lastState.responseText,
         error: err.message || 'Unknown error',
       };
     } finally {
