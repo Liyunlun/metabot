@@ -19,6 +19,8 @@ export function createEngine(config: BotConfigBase, logger: Logger): Engine {
       return new ClaudeEngine(config, logger);
     case 'kimi':
       return new KimiEngine(config, logger);
+    case 'codex':
+      throw new Error("Engine 'codex' is not yet implemented (lands in Batch 4).");
     default: {
       const _exhaustive: never = name;
       throw new Error(`Unknown engine: ${_exhaustive}`);
@@ -26,11 +28,11 @@ export function createEngine(config: BotConfigBase, logger: Logger): Engine {
   }
 }
 
-function resolveEngineName(config: BotConfigBase): EngineName {
+export function resolveEngineName(config: BotConfigBase): EngineName {
   const explicit = config.engine;
   if (explicit) return explicit;
   const envDefault = process.env.METABOT_ENGINE as EngineName | undefined;
-  if (envDefault === 'claude' || envDefault === 'kimi') return envDefault;
+  if (envDefault === 'claude' || envDefault === 'kimi' || envDefault === 'codex') return envDefault;
   return 'claude';
 }
 
