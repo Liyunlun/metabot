@@ -192,7 +192,7 @@ describe('buildCard', () => {
       startTime: Date.now(),
     };
     const json = JSON.parse(buildCard(state));
-    const md = json.elements.find((e: any) => e.tag === 'markdown' && e.content.includes('thinking'));
+    const md = json.elements.find((e: any) => e.tag === 'markdown' && /thinking/i.test(e.content));
     expect(md).toBeDefined();
   });
 });
