@@ -11,6 +11,14 @@ import { APPROVAL_BUTTON_KIND } from '../src/security/approval-card.js';
 const CHAT = 'oc_chat_A';
 const REQ = { command: 'rm -rf /tmp/foo', description: 'recursive delete', patternKey: 'recursive delete' };
 
+/** Card Schema 2.0: elements live under body.elements, callback value under behaviors[0].value. */
+function elementsOf(card: any): any[] {
+  return card.body?.elements ?? card.elements;
+}
+function buttonValue(btn: any): any {
+  return btn.behaviors?.[0]?.value ?? btn.value;
+}
+
 function makeSender(): CardSender & {
   sendCard: ReturnType<typeof vi.fn>;
   updateCard: ReturnType<typeof vi.fn>;
@@ -71,11 +79,11 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     const [, cardJson] = sender.sendCard.mock.calls[0] as [string, string];
     const card = JSON.parse(cardJson);
     // Find the approvalId from the button value for the click we're about to simulate.
-    const action = card.elements.find((e: any) => e.tag === 'action');
-    const oneBtn = action.actions.find((b: any) => b.value.choice === 'once');
-    expect(oneBtn.value.kind).toBe(APPROVAL_BUTTON_KIND);
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
+    const oneBtn = action.actions.find((b: any) => buttonValue(b).choice === 'once');
+    expect(buttonValue(oneBtn).kind).toBe(APPROVAL_BUTTON_KIND);
 
-    const routed = bridge.handleButtonClick(oneBtn.value, 'user_xyz');
+    const routed = bridge.handleButtonClick(buttonValue(oneBtn), 'user_xyz');
     expect(routed).toBe(true);
 
     await expect(p).resolves.toBe('once');
@@ -98,10 +106,10 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     await Promise.resolve();
 
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const denyBtn = card.elements
+    const denyBtn = elementsOf(card)
       .find((e: any) => e.tag === 'action')
-      .actions.find((b: any) => b.value.choice === 'deny');
-    bridge.handleButtonClick(denyBtn.value, 'user_xyz');
+      .actions.find((b: any) => buttonValue(b).choice === 'deny');
+    bridge.handleButtonClick(buttonValue(denyBtn), 'user_xyz');
 
     await expect(p).resolves.toBe('deny');
     const updateJson = sender.updateCard.mock.calls[0][1] as string;
@@ -125,7 +133,7 @@ describe('ApprovalBridge — notify → sendCard → button click → updateCard
     await Promise.resolve();
     await Promise.resolve();
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const btn = card.elements.find((e: any) => e.tag === 'action').actions[0].value;
+    const btn = buttonValue(elementsOf(card).find((e: any) => e.tag === 'action').actions[0]);
 
     bridge.handleButtonClick(btn);
     bridge.handleButtonClick(btn); // duplicate
@@ -223,7 +231,7 @@ describe('ApprovalBridge — failure & detach semantics', () => {
     await Promise.resolve();
     await Promise.resolve();
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const btn = card.elements.find((e: any) => e.tag === 'action').actions[0].value;
+    const btn = buttonValue(elementsOf(card).find((e: any) => e.tag === 'action').actions[0]);
 
     // Fire timeout — store resolves as deny, bridge observer updates the card.
     vi.advanceTimersByTime(5_000);
@@ -302,10 +310,10 @@ describe('ApprovalBridge — card send vs resolve race (Codex R3 P2)', () => {
     // messageId === undefined so it can't updateCard yet — it must stash.
     const cardJson = sender.sendCard.mock.calls[0][1] as string;
     const card = JSON.parse(cardJson);
-    const oneBtn = card.elements
+    const oneBtn = elementsOf(card)
       .find((e: any) => e.tag === 'action')
-      .actions.find((b: any) => b.value.choice === 'once');
-    bridge.handleButtonClick(oneBtn.value, 'user_fast');
+      .actions.find((b: any) => buttonValue(b).choice === 'once');
+    bridge.handleButtonClick(buttonValue(oneBtn), 'user_fast');
     await expect(p).resolves.toBe('once');
 
     // Still no updateCard — we can't edit a message that doesn't exist yet.
@@ -408,10 +416,10 @@ describe('ApprovalBridge — card send vs resolve race (Codex R3 P2)', () => {
 
     // User clicks once while send still in flight.
     const card = JSON.parse(sender.sendCard.mock.calls[0][1] as string);
-    const oneBtn = card.elements
+    const oneBtn = elementsOf(card)
       .find((e: any) => e.tag === 'action')
-      .actions.find((b: any) => b.value.choice === 'once');
-    bridge.handleButtonClick(oneBtn.value);
+      .actions.find((b: any) => buttonValue(b).choice === 'once');
+    bridge.handleButtonClick(buttonValue(oneBtn));
     await expect(p).resolves.toBe('once');
 
     // Now the send FAILS. The bridge must not try to re-resolve as 'deny'

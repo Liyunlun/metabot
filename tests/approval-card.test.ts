@@ -15,9 +15,18 @@ function parseCard(json: string): any {
   return JSON.parse(json);
 }
 
+/** Card Schema 2.0: elements live under body.elements, callback value under behaviors[0].value. */
+function elementsOf(card: any): any[] {
+  return card.body?.elements ?? card.elements;
+}
+function buttonValue(btn: any): any {
+  return btn.behaviors?.[0]?.value ?? btn.value;
+}
+
 describe('buildPendingApprovalCard', () => {
   it('uses orange template for the "awaiting" state', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
+    expect(card.schema).toBe('2.0');
     expect(card.header.template).toBe('orange');
     expect(card.header.title.content).toContain('危险命令');
   });
@@ -30,10 +39,10 @@ describe('buildPendingApprovalCard', () => {
 
   it('emits exactly 4 buttons in choice order: once, session, always, deny', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
-    const action = card.elements.find((e: any) => e.tag === 'action');
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
     expect(action).toBeTruthy();
     expect(action.actions).toHaveLength(4);
-    expect(action.actions.map((b: any) => b.value.choice)).toEqual([
+    expect(action.actions.map((b: any) => buttonValue(b).choice)).toEqual([
       'once',
       'session',
       'always',
@@ -43,18 +52,29 @@ describe('buildPendingApprovalCard', () => {
 
   it('each button carries the APPROVAL_BUTTON_KIND tag + approvalId', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_42', request: REQ }));
-    const action = card.elements.find((e: any) => e.tag === 'action');
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
     for (const btn of action.actions) {
-      expect(btn.value.kind).toBe(APPROVAL_BUTTON_KIND);
-      expect(btn.value.approvalId).toBe('a_42');
+      const v = buttonValue(btn);
+      expect(v.kind).toBe(APPROVAL_BUTTON_KIND);
+      expect(v.approvalId).toBe('a_42');
+    }
+  });
+
+  it('emits callbacks via Card 2.0 behaviors (not top-level value)', () => {
+    const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
+    for (const btn of action.actions) {
+      expect(btn.behaviors).toBeTruthy();
+      expect(btn.behaviors[0].type).toBe('callback');
+      expect(btn.value).toBeUndefined();
     }
   });
 
   it('deny button uses "danger" style, others use "primary"', () => {
     const card = parseCard(buildPendingApprovalCard({ approvalId: 'a_1', request: REQ }));
-    const action = card.elements.find((e: any) => e.tag === 'action');
-    const denyBtn = action.actions.find((b: any) => b.value.choice === 'deny');
-    const onceBtn = action.actions.find((b: any) => b.value.choice === 'once');
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
+    const denyBtn = action.actions.find((b: any) => buttonValue(b).choice === 'deny');
+    const onceBtn = action.actions.find((b: any) => buttonValue(b).choice === 'once');
     expect(denyBtn.type).toBe('danger');
     expect(onceBtn.type).toBe('primary');
   });
@@ -104,7 +124,7 @@ describe('buildPendingApprovalCard', () => {
       const card = parseCard(
         buildPendingApprovalCard({ approvalId: 'a_1', request: explainedReq }),
       );
-      const action = card.elements.find((e: any) => e.tag === 'action');
+      const action = elementsOf(card).find((e: any) => e.tag === 'action');
       expect(action.actions).toHaveLength(4);
     });
 
@@ -190,7 +210,7 @@ describe('buildResolvedApprovalCard', () => {
     const card = parseCard(
       buildResolvedApprovalCard({ approvalId: 'a_1', request: REQ, choice: 'once' }),
     );
-    const action = card.elements.find((e: any) => e.tag === 'action');
+    const action = elementsOf(card).find((e: any) => e.tag === 'action');
     expect(action).toBeUndefined();
   });
 

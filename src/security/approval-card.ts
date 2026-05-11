@@ -116,11 +116,18 @@ export function buildPendingApprovalCard(input: PendingApprovalCardInput): strin
         tag: 'button',
         text: { tag: 'plain_text', content: label },
         type,
-        value: {
-          kind: APPROVAL_BUTTON_KIND,
-          approvalId,
-          choice,
-        },
+        // Card Schema 2.0: callbacks must live under `behaviors`. v1's
+        // top-level `value` is silently dropped under schema 2.0 — see #240.
+        behaviors: [
+          {
+            type: 'callback',
+            value: {
+              kind: APPROVAL_BUTTON_KIND,
+              approvalId,
+              choice,
+            },
+          },
+        ],
       })),
     },
     {
@@ -132,12 +139,17 @@ export function buildPendingApprovalCard(input: PendingApprovalCardInput): strin
   );
 
   const card = {
-    config: { wide_screen_mode: true, update_multi: true },
+    schema: '2.0',
+    config: { enable_forward: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: '⚠️ 危险命令需要确认' },
       template: 'orange',
     },
-    elements,
+    body: {
+      direction: 'vertical',
+      vertical_spacing: '4px',
+      elements,
+    },
   };
   return JSON.stringify(card);
 }
@@ -209,12 +221,17 @@ export function buildResolvedApprovalCard(input: ResolvedApprovalCardInput): str
   );
 
   const card = {
-    config: { wide_screen_mode: true, update_multi: true },
+    schema: '2.0',
+    config: { enable_forward: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: title },
       template,
     },
-    elements,
+    body: {
+      direction: 'vertical',
+      vertical_spacing: '4px',
+      elements,
+    },
   };
   return JSON.stringify(card);
 }
