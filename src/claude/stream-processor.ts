@@ -33,6 +33,14 @@ export class StreamProcessor {
   private _lastSentTurnText: string | undefined;
   /** SDK result text, stored separately so it doesn't overwrite responseText */
   private _resultSummary: string | undefined;
+  /**
+   * Running transcript of everything that surfaces in the chat: assistant turn
+   * text, top-level tool outputs, and the SDK result summary. The bridge uses
+   * this for ApiTaskResult.responseText so synchronous bus callers see what the
+   * group chat sees — otherwise responseText is empty whenever the session
+   * ends on tool calls (no trailing assistant text).
+   */
+  private _transcript: string[] = [];
   private toolCalls: ToolCall[] = [];
   private toolSummaries: string[] = [];
   private subagentTasks: Map<string, SubagentTask> = new Map();
@@ -174,6 +182,7 @@ export class StreamProcessor {
         this._completedTurnText = block.text;
         this._lastSentTurnText = block.text;
         this.responseText = '';
+        this._transcript.push(block.text);
       } else if (block.type === 'tool_use' && block.name) {
         this.addToolCall(block.name, block.input);
         if (block.name === 'AskUserQuestion' && block.id && block.input) {
@@ -405,6 +414,9 @@ export class StreamProcessor {
     // Store result separately — only if it differs from the last turn text already sent.
     // SDK result often echoes the last assistant message; skip to avoid duplication.
     this._resultSummary = (resultText && resultText !== this._lastSentTurnText) ? resultText : undefined;
+    if (this._resultSummary && !isApiError) {
+      this._transcript.push(`[Result]\n${this._resultSummary}`);
+    }
 
     return {
       status: (isError || isApiError) ? 'error' : 'complete',
@@ -462,6 +474,8 @@ export class StreamProcessor {
         tool.status = 'done';
         if (output) {
           tool.output = output;
+          const header = tool.detail ? `[Tool: ${tool.name}] ${tool.detail}` : `[Tool: ${tool.name}]`;
+          this._transcript.push(`${header}\n${output}`);
         }
       }
       this.currentToolName = null;
@@ -543,6 +557,20 @@ export class StreamProcessor {
 
   getSessionId(): string | undefined {
     return this.sessionId;
+  }
+
+  /**
+   * Full transcript of the session as the chat saw it: each completed turn's
+   * text, each top-level tool output (with a `[Tool: Name] detail` header),
+   * the SDK result summary, and any in-progress text not yet flushed as a
+   * completed turn. Joined with blank lines. Used by the bridge to populate
+   * ApiTaskResult.responseText so sync bus callers receive the same content
+   * the Feishu cards show.
+   */
+  getFullTranscript(): string {
+    const parts = [...this._transcript];
+    if (this.responseText) parts.push(this.responseText);
+    return parts.join('\n\n').trim();
   }
 
   getImagePaths(): string[] {
