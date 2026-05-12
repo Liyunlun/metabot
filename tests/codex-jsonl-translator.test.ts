@@ -44,17 +44,26 @@ describe('Codex JSONL translator', () => {
     const state = createCodexTranslatorState({ model: 'gpt-5.4-codex', contextWindow: 400000 });
     const processor = new StreamProcessor('Run pwd');
 
+    // Fork's StreamProcessor splits each assistant text into a per-turn message
+    // (drained via completedTurnText) instead of accumulating into responseText.
+    // Collect the emitted turns so the test reflects the fork's send-on-each-turn
+    // semantics rather than upstream's accumulate-into-responseText behavior.
+    const turnTexts: string[] = [];
     let cardState = processor.processMessage({ type: 'system' });
+    if (cardState.completedTurnText) turnTexts.push(cardState.completedTurnText);
     for (const event of events) {
       for (const message of translateCodexJsonEvent(event, state)) {
         cardState = processor.processMessage(message);
+        if (cardState.completedTurnText) turnTexts.push(cardState.completedTurnText);
       }
     }
 
     expect(processor.getSessionId()).toBe('019dbe98-98b1-78b1-a6b0-b422e495db52');
     expect(cardState.status).toBe('complete');
-    expect(cardState.responseText).toBe('DONE');
-    expect(cardState.toolCalls).toEqual([{ name: 'Bash', detail: '`/bin/zsh -lc pwd`', status: 'done' }]);
+    expect(turnTexts).toEqual(['I’ll run `pwd` once.', 'DONE']);
+    expect(cardState.toolCalls).toEqual([
+      { name: 'Bash', detail: '`/bin/zsh -lc pwd`', status: 'done', input: '/bin/zsh -lc pwd' },
+    ]);
     expect(cardState.model).toBe('gpt-5.4-codex');
     expect(cardState.totalTokens).toBe(23181);
     expect(cardState.contextWindow).toBe(400000);
