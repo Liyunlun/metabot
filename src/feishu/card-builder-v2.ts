@@ -42,6 +42,14 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + '…';
 }
 
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}m${sec}s`;
+}
+
 function truncateContent(text: string): string {
   if (text.length <= MAX_CONTENT_LENGTH) return text;
   const half = Math.floor(MAX_CONTENT_LENGTH / 2) - 50;
@@ -117,6 +125,9 @@ export function buildCardV2(state: CardState): string {
   const config   = STATUS_CONFIG[state.status];
   const elements: unknown[] = [];
 
+  // Elapsed time for header / thinking placeholder
+  const elapsed = state.startTime ? formatElapsed(Date.now() - state.startTime) : undefined;
+
   // Tool calls section
   if (state.toolCalls.length > 0) {
     const toolLines = state.toolCalls.map((t) => {
@@ -159,7 +170,7 @@ export function buildCardV2(state: CardState): string {
   } else if (state.status === 'thinking') {
     elements.push({
       tag:     'markdown',
-      content: '_Thinking..._',
+      content: elapsed ? `_Thinking... (${elapsed})_` : '_Thinking..._',
     });
   }
 
@@ -209,9 +220,13 @@ export function buildCardV2(state: CardState): string {
     });
   }
 
-  // Stats footer — grey background panel
+  // Stats footer — grey background panel. Field order mirrors v1 card-builder
+  // so users see the same layout regardless of CARD_SCHEMA_V2.
   {
     const parts: string[] = [];
+    if (state.model) parts.push(state.model.replace(/^claude-/, ''));
+    if (state.thinking) parts.push(`thinking:${state.thinking}`);
+    if (state.effort) parts.push(`effort:${state.effort}`);
     if (state.totalTokens && state.contextWindow) {
       const pct    = Math.round((state.totalTokens / state.contextWindow) * 100);
       const tokensK = state.totalTokens >= 1000
@@ -223,8 +238,15 @@ export function buildCardV2(state: CardState): string {
     if (state.status === 'complete' || state.status === 'error') {
       if (state.sessionCostUsd != null) parts.push(`$${state.sessionCostUsd.toFixed(2)}`);
       if (state.model) parts.push(state.model.replace(/^claude-/, ''));
-      if (state.durationMs !== undefined) parts.push(`${(state.durationMs / 1000).toFixed(1)}s`);
     }
+    if (state.durationMs !== undefined) parts.push(`${(state.durationMs / 1000).toFixed(1)}s`);
+    if (state.numTurns !== undefined) parts.push(`${state.numTurns} turns`);
+    if (state.workingDirectory) {
+      const dir = state.workingDirectory;
+      const short = dir.length > 40 ? '.../' + dir.split('/').slice(-2).join('/') : dir;
+      parts.push(`📁 ${short}`);
+    }
+    if (state.sessionId) parts.push(`🔑 ${state.sessionId.slice(0, 8)}`);
     if (parts.length > 0) {
       elements.push({
         tag:               'column_set',
@@ -267,7 +289,11 @@ export function buildCardV2(state: CardState): string {
       template: config.color,
       title: {
         tag:     'plain_text',
-        content: `${config.icon} ${config.title}`,
+        content: state.cardTitle
+          ? `${config.icon} ${state.cardTitle}`
+          : elapsed && (state.status === 'thinking' || state.status === 'running')
+            ? `${config.icon} ${config.title} (${elapsed})`
+            : `${config.icon} ${config.title}`,
       },
     },
     body: {
