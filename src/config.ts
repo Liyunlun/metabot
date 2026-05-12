@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/** Agent engine backing a bot. `claude` uses Claude Code; `kimi` uses Kimi Code (Phase 2). */
+/** Agent engine backing a bot. `claude` → Claude Code, `kimi` → Kimi Code, `codex` → Codex CLI. */
 export type EngineName = 'claude' | 'kimi' | 'codex';
 
 /** Shared config fields used by MessageBridge and Executors (platform-agnostic). */
@@ -55,6 +55,23 @@ export interface BotConfigBase {
     /** Context window size in tokens (defaults to 262144 — Kimi for Coding default). */
     contextWindow?: number;
   };
+  /** Codex-specific overrides. Populated only when engine === 'codex'. */
+  codex?: CodexBotConfig;
+}
+
+/** Codex-specific overrides. Populated only when engine === 'codex'. */
+export interface CodexBotConfig {
+  executable?: string;
+  model?: string;
+  displayModel?: string;
+  profile?: string;
+  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  dangerouslyBypassApprovalsAndSandbox?: boolean;
+  /** Context window size in tokens for display only. */
+  contextWindow?: number;
+  extraArgs?: string[];
+  env?: Record<string, string>;
 }
 
 export interface ApprovalConfigJsonEntry {
@@ -154,10 +171,26 @@ export interface KimiJsonConfig {
   contextWindow?: number;
 }
 
-/** Fields shared across all bot JSON entries (engine selection, Kimi overrides). */
+/** Codex-specific overrides in bots.json. */
+export interface CodexJsonConfig {
+  executable?: string;
+  model?: string;
+  displayModel?: string;
+  profile?: string;
+  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  dangerouslyBypassApprovalsAndSandbox?: boolean;
+  /** Context window size in tokens for display only. */
+  contextWindow?: number;
+  extraArgs?: string[];
+  env?: Record<string, string>;
+}
+
+/** Fields shared across all bot JSON entries (engine selection and engine overrides). */
 interface EngineJsonFields {
   engine?: EngineName;
   kimi?: KimiJsonConfig;
+  codex?: CodexJsonConfig;
 }
 
 export interface FeishuBotJsonEntry extends EngineJsonFields {
@@ -185,6 +218,7 @@ export interface FeishuBotJsonEntry extends EngineJsonFields {
 }
 
 function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
+  const codex = buildCodexConfig(entry.codex);
   return {
     name: entry.name,
     ...(entry.description ? { description: entry.description } : {}),
@@ -196,6 +230,7 @@ function feishuBotFromJson(entry: FeishuBotJsonEntry): BotConfig {
     ...(entry.groupNoMention ? { groupNoMention: true } : {}),
     ...(entry.engine ? { engine: entry.engine } : {}),
     ...(entry.kimi ? { kimi: entry.kimi } : {}),
+    ...(codex ? { codex } : {}),
     feishu: {
       appId: entry.feishuAppId,
       appSecret: entry.feishuAppSecret,
@@ -229,6 +264,7 @@ export interface TelegramBotJsonEntry extends EngineJsonFields {
 }
 
 function telegramBotFromJson(entry: TelegramBotJsonEntry): TelegramBotConfig {
+  const codex = buildCodexConfig(entry.codex);
   return {
     name: entry.name,
     ...(entry.description ? { description: entry.description } : {}),
@@ -239,6 +275,7 @@ function telegramBotFromJson(entry: TelegramBotJsonEntry): TelegramBotConfig {
     ...(entry.ttsVoice ? { ttsVoice: entry.ttsVoice } : {}),
     ...(entry.engine ? { engine: entry.engine } : {}),
     ...(entry.kimi ? { kimi: entry.kimi } : {}),
+    ...(codex ? { codex } : {}),
     telegram: {
       botToken: entry.telegramBotToken,
     },
@@ -267,6 +304,7 @@ export interface WebBotJsonEntry extends EngineJsonFields {
 }
 
 export function webBotFromJson(entry: WebBotJsonEntry): BotConfigBase {
+  const codex = buildCodexConfig(entry.codex);
   return {
     name: entry.name,
     ...(entry.description ? { description: entry.description } : {}),
@@ -277,6 +315,7 @@ export function webBotFromJson(entry: WebBotJsonEntry): BotConfigBase {
     ...(entry.ttsVoice ? { ttsVoice: entry.ttsVoice } : {}),
     ...(entry.engine ? { engine: entry.engine } : {}),
     ...(entry.kimi ? { kimi: entry.kimi } : {}),
+    ...(codex ? { codex } : {}),
     claude: buildClaudeConfig(entry),
     ...(entry.approval ? { approval: entry.approval } : {}),
   };
@@ -300,11 +339,13 @@ export interface WechatBotJsonEntry extends EngineJsonFields {
 }
 
 function wechatBotFromJson(entry: WechatBotJsonEntry): WechatBotConfig {
+  const codex = buildCodexConfig(entry.codex);
   return {
     name: entry.name,
     ...(entry.description ? { description: entry.description } : {}),
     ...(entry.engine ? { engine: entry.engine } : {}),
     ...(entry.kimi ? { kimi: entry.kimi } : {}),
+    ...(codex ? { codex } : {}),
     wechat: {
       ilinkBaseUrl: entry.ilinkBaseUrl,
       botToken: entry.wechatBotToken,
@@ -340,11 +381,29 @@ function buildClaudeConfig(entry: {
   };
 }
 
+function buildCodexConfig(entry?: CodexJsonConfig): BotConfigBase['codex'] | undefined {
+  const cfg: BotConfigBase['codex'] = {
+    ...(process.env.CODEX_EXECUTABLE_PATH ? { executable: process.env.CODEX_EXECUTABLE_PATH } : {}),
+    ...(process.env.CODEX_MODEL ? { model: process.env.CODEX_MODEL } : {}),
+    ...(process.env.CODEX_DISPLAY_MODEL ? { displayModel: process.env.CODEX_DISPLAY_MODEL } : {}),
+    ...(process.env.CODEX_PROFILE ? { profile: process.env.CODEX_PROFILE } : {}),
+    ...(process.env.CODEX_APPROVAL_POLICY ? { approvalPolicy: process.env.CODEX_APPROVAL_POLICY as CodexJsonConfig['approvalPolicy'] } : {}),
+    ...(process.env.CODEX_SANDBOX ? { sandbox: process.env.CODEX_SANDBOX as CodexJsonConfig['sandbox'] } : {}),
+    ...(process.env.CODEX_BYPASS_APPROVALS_AND_SANDBOX === 'true' ? { dangerouslyBypassApprovalsAndSandbox: true } : {}),
+    ...(process.env.CODEX_CONTEXT_WINDOW ? { contextWindow: parseInt(process.env.CODEX_CONTEXT_WINDOW, 10) } : {}),
+    ...(entry ?? {}),
+  };
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
 // --- Single-bot env var mode ---
 
 function feishuBotFromEnv(): BotConfig {
+  const codex = buildCodexConfig();
   return {
     name: 'default',
+    ...(process.env.METABOT_ENGINE ? { engine: process.env.METABOT_ENGINE as EngineName } : {}),
+    ...(codex ? { codex } : {}),
     feishu: {
       appId: required('FEISHU_APP_ID'),
       appSecret: required('FEISHU_APP_SECRET'),
@@ -364,8 +423,11 @@ function feishuBotFromEnv(): BotConfig {
 }
 
 function telegramBotFromEnv(): TelegramBotConfig {
+  const codex = buildCodexConfig();
   return {
     name: 'telegram-default',
+    ...(process.env.METABOT_ENGINE ? { engine: process.env.METABOT_ENGINE as EngineName } : {}),
+    ...(codex ? { codex } : {}),
     telegram: {
       botToken: required('TELEGRAM_BOT_TOKEN'),
     },
@@ -384,8 +446,11 @@ function telegramBotFromEnv(): TelegramBotConfig {
 }
 
 function wechatBotFromEnv(): WechatBotConfig {
+  const codex = buildCodexConfig();
   return {
     name: 'wechat-default',
+    ...(process.env.METABOT_ENGINE ? { engine: process.env.METABOT_ENGINE as EngineName } : {}),
+    ...(codex ? { codex } : {}),
     wechat: {
       botToken: process.env.WECHAT_BOT_TOKEN || undefined,
     },
