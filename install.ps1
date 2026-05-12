@@ -1,14 +1,49 @@
 # MetaBot Installer for Windows PowerShell
-# Usage: irm https://raw.githubusercontent.com/Shiien/metabot/main/install.ps1 | iex
+# Usage:
+#   irm https://raw.githubusercontent.com/Shiien/metabot/main/install.ps1 | iex
+#   .\install.ps1 -Dir C:\opt\metabot
+#   $env:METABOT_HOME = "C:\opt\metabot"; irm <url> | iex
 #Requires -Version 5.1
 
+[CmdletBinding()]
+param(
+    [Alias('d', 'InstallDir')]
+    [string]$Dir = "",
+
+    [switch]$Help
+)
+
 $ErrorActionPreference = "Stop"
+
+if ($Help) {
+    @"
+MetaBot Installer (Windows)
+
+Usage:
+  .\install.ps1 [-Dir <path>]
+  irm <url> | iex                        # uses default ($env:USERPROFILE\metabot) or $env:METABOT_HOME
+
+Parameters:
+  -Dir, -d <path>     Install MetaBot to <path>.
+                      Priority: -Dir > `$env:METABOT_HOME > interactive prompt.
+                      Default: `$env:USERPROFILE\metabot
+  -Help               Show this help and exit.
+
+Examples:
+  .\install.ps1
+  .\install.ps1 -Dir C:\opt\metabot
+  `$env:METABOT_HOME = "C:\opt\metabot"; irm <url> | iex
+"@ | Write-Host
+    exit 0
+}
 
 # ============================================================================
 # Configuration defaults
 # ============================================================================
 $MetabotRepo = if ($env:METABOT_REPO) { $env:METABOT_REPO } else { "https://github.com/Shiien/metabot.git" }
-$MetabotHome = if ($env:METABOT_HOME) { $env:METABOT_HOME } else { Join-Path $env:USERPROFILE "metabot" }
+# $MetabotHome is resolved later (Phase 0.5) — priority: -Dir > env > prompt > default.
+$DefaultMetabotHome = Join-Path $env:USERPROFILE "metabot"
+$MetabotHome = $null
 
 # ============================================================================
 # Helper functions (colors via Write-Host -ForegroundColor)
@@ -103,6 +138,51 @@ if ($PSVer.Major -lt 5 -or ($PSVer.Major -eq 5 -and $PSVer.Minor -lt 1)) {
     Write-Err "PowerShell 5.1+ is required. Current: $PSVer"
     exit 1
 }
+
+# ============================================================================
+# Phase 0.5: Resolve install directory
+# Priority: -Dir parameter > $env:METABOT_HOME > interactive prompt > default.
+# ============================================================================
+Write-Step "Phase 0.5: Choose install directory"
+
+if ($Dir) {
+    $MetabotHome = $Dir
+    Write-Info "Using install directory from -Dir: $MetabotHome"
+} elseif ($env:METABOT_HOME) {
+    $MetabotHome = $env:METABOT_HOME
+    Write-Info "Using install directory from `$env:METABOT_HOME: $MetabotHome"
+} else {
+    Write-Host ""
+    Write-Host "Where should MetaBot be installed?" -ForegroundColor White
+    Write-Host "  (Override later with -Dir or `$env:METABOT_HOME.)"
+    $MetabotHome = Read-Input "Install directory" $DefaultMetabotHome
+}
+
+# Expand a leading ~ to $env:USERPROFILE.
+if ($MetabotHome.StartsWith("~")) {
+    $MetabotHome = Join-Path $env:USERPROFILE ($MetabotHome.Substring(1).TrimStart('\','/'))
+}
+
+# Require a rooted path so all later $MetabotHome references are unambiguous.
+if (-not [System.IO.Path]::IsPathRooted($MetabotHome)) {
+    Write-Err "Install path must be absolute, got: $MetabotHome"
+    exit 1
+}
+
+# Refuse a few obviously-bad targets that would clobber the user's profile or a system root.
+$normalized = $MetabotHome.TrimEnd('\','/')
+$forbidden = @(
+    $env:USERPROFILE.TrimEnd('\','/'),
+    $env:SystemDrive,                          # e.g. "C:"
+    (Join-Path $env:SystemDrive 'Users').TrimEnd('\','/'),
+    (Join-Path $env:SystemDrive 'Windows').TrimEnd('\','/')
+) | ForEach-Object { $_.TrimEnd('\','/') }
+if ($forbidden -contains $normalized -or $normalized -eq '') {
+    Write-Err "Refusing to install directly into $MetabotHome — pick a dedicated subdirectory."
+    exit 1
+}
+
+Write-Success "Install directory: $MetabotHome"
 
 # ============================================================================
 # Phase 1: Check prerequisites
@@ -207,7 +287,20 @@ if (Test-Path (Join-Path $MetabotHome ".git")) {
     Write-Info "Existing installation found, pulling latest..."
     Push-Location $MetabotHome
     $OldHead = git rev-parse HEAD
-    try { git pull --ff-only } catch { Write-Warn "git pull failed, continuing with existing code" }
+    git pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        Write-Err "git pull --ff-only failed at $MetabotHome."
+        Write-Err "Your checkout has diverged from origin or has uncommitted changes."
+        Write-Err "Continuing with stale code would silently break later phases (e.g. Phase 6 'skill not found')."
+        Write-Err ""
+        Write-Err "Fix one of these and re-run install.ps1:"
+        Write-Err "  - Inspect: cd $MetabotHome; git status; git log --oneline -5"
+        Write-Err "  - Stash & retry:    cd $MetabotHome; git stash; git pull --ff-only"
+        Write-Err "  - Reset to origin (DESTROYS local commits/edits):"
+        Write-Err "      cd $MetabotHome; git fetch origin; git reset --hard origin/main"
+        exit 1
+    }
     $NewHead = git rev-parse HEAD
 
     # Re-exec with updated install.ps1 if it changed
@@ -488,6 +581,18 @@ Write-Step "Phase 6: Installing skills and setting up workspace"
 $SkillsDir = Join-Path $env:USERPROFILE ".claude\skills"
 New-Item -ItemType Directory -Path $SkillsDir -Force | Out-Null
 
+# Sanity check: the bundled skill tree must exist in the checked-out repo.
+# If it's missing, the user's checkout is stale (predates the skill bundling
+# commits) — fail with a clear message instead of cryptic Copy-Item errors.
+$SkillSentinel = Join-Path $MetabotHome "src\skills\metaskill\SKILL.md"
+if (-not (Test-Path $SkillSentinel)) {
+    Write-Err "Bundled skill source not found at: $SkillSentinel"
+    Write-Err "Your $MetabotHome checkout appears to be stale or incomplete."
+    Write-Err "Try: cd $MetabotHome; git fetch origin; git reset --hard origin/main"
+    Write-Err "(WARNING: 'git reset --hard' discards uncommitted local changes.)"
+    exit 1
+}
+
 # Install metaskill
 Write-Info "Installing metaskill skill..."
 $metaskillDir = Join-Path $SkillsDir "metaskill\flows"
@@ -631,6 +736,15 @@ if ($HasBash) {
 } else {
     Write-Warn "Git Bash not found. CLI tools (mm, mb, metabot) require bash."
     Write-Warn "Install Git for Windows (https://git-scm.com) to enable CLI tools."
+}
+
+# Persist METABOT_HOME for non-default install paths so the CLI tools
+# (mm/mb/metabot) can find the install in new shell sessions. The CLIs all
+# fall back to ~/metabot, so we only need to persist when it differs.
+if ($MetabotHome -ne $DefaultMetabotHome) {
+    [System.Environment]::SetEnvironmentVariable("METABOT_HOME", $MetabotHome, "User")
+    $env:METABOT_HOME = $MetabotHome
+    Write-Info "Persisted METABOT_HOME=$MetabotHome to user environment"
 }
 
 # ============================================================================
