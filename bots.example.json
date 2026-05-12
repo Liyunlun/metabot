@@ -24,6 +24,18 @@
       "model": "claude-sonnet-4-6",
       "thinking": { "type": "adaptive" },
       "effort": "high"
+    },
+    {
+      "name": "project-gamma",
+      "description": "Kimi-powered agent (uses your Moonshot subscription)",
+      "engine": "kimi",
+      "feishuAppId": "cli_zzz",
+      "feishuAppSecret": "secret3",
+      "defaultWorkingDirectory": "/home/user/project-gamma",
+      "kimi": {
+        "model": "kimi-latest",
+        "thinking": true
+      }
     }
   ],
   "telegramBots": [

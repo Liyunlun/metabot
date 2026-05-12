@@ -324,7 +324,7 @@ export function buildCard(state: CardState): string {
   } else if (state.status === 'thinking') {
     elements.push({
       tag: 'markdown',
-      content: elapsed ? `_Claude is thinking... (${elapsed})_` : '_Claude is thinking..._',
+      content: elapsed ? `_Thinking... (${elapsed})_` : '_Thinking..._',
     });
   }
 
@@ -444,6 +444,8 @@ export function buildCard(state: CardState): string {
         parts.push(`$${state.sessionCostUsd.toFixed(2)}`);
       }
       if (state.model) {
+        // Strip the claude- prefix (claude-opus-4-7 → opus-4-7) but keep the
+        // full Kimi model name since e.g. `for-coding` loses too much context.
         parts.push(state.model.replace(/^claude-/, ''));
       }
     }
