@@ -52,6 +52,18 @@ export interface IMessageSender {
   /** Download a user-sent file to a local path. */
   downloadFile(messageId: string, fileKey: string, savePath: string): Promise<boolean>;
 
+  /**
+   * Send a pre-built raw card JSON string. Used by the security/approval
+   * subsystem which constructs its own Feishu Schema 2.0 card outside the
+   * CardState pipeline. Returns messageId on success.
+   * Platforms without raw-card support omit this; the approval bridge
+   * detects the absence and disables itself.
+   */
+  sendRawCard?(chatId: string, cardJson: string): Promise<string | undefined>;
+
+  /** Update an existing raw card with a pre-built JSON string. */
+  updateRawCard?(messageId: string, cardJson: string): Promise<boolean>;
+
   /** If true, the bridge will not send a separate "Task completed" text after the card update. */
   skipCompletionNotice?: boolean;
 }

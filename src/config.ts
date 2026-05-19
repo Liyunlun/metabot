@@ -65,6 +65,17 @@ export interface BotConfigBase {
     /** Max concurrent executors per bot (LRU-evicted past this). Default 20. */
     maxConcurrent?: number;
   };
+  /** Dangerous-command approval / smart-approval pre-filter configuration. */
+  approval?: {
+    smartApproval?: {
+      /** Defaults to true. Set false to skip the LLM classifier entirely. */
+      enabled?: boolean;
+      /** Classify call timeout (ms). Default 5000. */
+      timeoutMs?: number;
+      /** Explain call timeout (ms). Default 15000. Only fires for hard-blacklisted commands. */
+      explainTimeoutMs?: number;
+    };
+  };
 }
 
 /** Codex-specific overrides. Populated only when engine === 'codex'. */

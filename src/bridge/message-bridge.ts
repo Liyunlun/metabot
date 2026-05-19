@@ -26,6 +26,11 @@ import { CostTracker } from '../utils/cost-tracker.js';
 import { metrics } from '../utils/metrics.js';
 import type { SessionRegistry } from '../session/session-registry.js';
 import { splitResponseText } from '../feishu/card-builder.js';
+import { approvalStore, buildSessionKey } from '../security/approval-store.js';
+import { PermanentApprovalStore } from '../security/permanent-approval-store.js';
+import { ApprovalBridge, type CardSender } from '../security/approval-bridge.js';
+import { SmartApprovalClassifier } from '../security/smart-approval.js';
+import { createApprovalHandler } from '../security/approval-handler.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
@@ -294,6 +299,10 @@ export class MessageBridge {
     questions: PendingQuestion['questions'];
     cardMessageId: string;
   }>();
+  /** Dangerous-command approval UI (Feishu raw-card platforms only). */
+  private approvalBridge?: ApprovalBridge;
+  /** Phase 4 LLM pre-filter for dangerous-command classification. */
+  private smartApproval!: SmartApprovalClassifier;
   /** Callback for activity lifecycle events (task started/completed/failed). */
   onActivityEvent?: (event: ActivityEventData) => void;
 
@@ -324,6 +333,43 @@ export class MessageBridge {
     );
 
     this.outputHandler = new OutputHandler(logger, sender, this.outputsManager);
+
+    // Phase 4 LLM pre-filter — enabled by default. Operators opt out via
+    // `approval.smartApproval.enabled = false` in bots.json. Model tracks
+    // `config.claude.model` at call time so /model switches propagate.
+    const smartCfg = config.approval?.smartApproval;
+    this.smartApproval = new SmartApprovalClassifier(
+      {
+        enabled: smartCfg?.enabled ?? true,
+        timeoutMs: smartCfg?.timeoutMs ?? 5000,
+        explainTimeoutMs: smartCfg?.explainTimeoutMs ?? 15000,
+      },
+      () => this.config.claude.model,
+      logger,
+    );
+
+    // Dangerous-command approval wiring — only on platforms that expose
+    // raw-card (currently Feishu). Telegram etc. silently degrade: flagged
+    // Bash commands fail closed via the approval handler.
+    if (sender.sendRawCard && sender.updateRawCard) {
+      const cardSender: CardSender = {
+        sendCard: (chatId, json) => sender.sendRawCard!(chatId, json),
+        updateCard: (messageId, json) => sender.updateRawCard!(messageId, json),
+      };
+      this.approvalBridge = new ApprovalBridge(approvalStore, cardSender, logger);
+      this.commandHandler.setApprovalBridge(this.approvalBridge);
+    }
+
+    // Phase 5 — permanent allowlist persistence. Fire-and-forget so the
+    // constructor stays non-async; `approvePermanent()` writes through
+    // immediately for new entries even if the initial load is still pending.
+    void approvalStore
+      .attachPermanentStore(
+        new PermanentApprovalStore({
+          onError: (msg, err) => logger.warn({ err }, `[approval] ${msg}`),
+        }),
+      )
+      .catch((err) => logger.warn({ err }, '[approval] initial permanent-store load failed'));
   }
 
   /** Emit an activity event if a listener is registered. */
@@ -1106,6 +1152,13 @@ export class MessageBridge {
       maxTurns?: number;
       allowedTools?: string[];
       freshSession?: boolean;
+      /**
+       * Per-turn Bash PreToolUse approval handler. On the persistent path
+       * we register it via setApprovalHandler so the long-lived hook closure
+       * picks it up at call time; on the legacy path it flows through
+       * ExecutorOptions.approvalHandler.
+       */
+      approvalHandler?: (command: string) => Promise<'allow' | 'deny'>;
     },
   ): Promise<ExecutionHandle> {
     const session = this.sessionManager.getSession(chatId);
@@ -1135,6 +1188,9 @@ export class MessageBridge {
         apiContext: opts.apiContext,
         outputsDir: opts.outputsDir,
       });
+      // Register the per-turn Bash approval handler on the persistent
+      // executor's PreToolUse hook closure (cleared by the caller's finally).
+      exec.setApprovalHandler(opts.approvalHandler);
       // TurnHandle is structurally compatible with ExecutionHandle (stream,
       // sendAnswer, resolveQuestion, finish) — see persistent-executor.ts.
       return exec.nextTurn(opts.prompt) as unknown as ExecutionHandle;
@@ -1151,6 +1207,7 @@ export class MessageBridge {
       onTeamEvent: opts.onTeamEvent,
       maxTurns: opts.maxTurns,
       allowedTools: opts.allowedTools,
+      approvalHandler: opts.approvalHandler,
     });
   }
 
@@ -1265,6 +1322,9 @@ export class MessageBridge {
     value: Record<string, unknown>;
   }): Promise<void> {
     const { chatId, userId, messageId, value } = event;
+    // Approval card buttons take priority — they short-circuit before the
+    // AskUserQuestion routing since they target a different in-flight UI.
+    if (this.approvalBridge?.handleButtonClick(value, userId)) return;
     const task = this.runningTasks.get(chatId);
     if (!task || !task.pendingQuestion) {
       this.logger.debug({ chatId, userId }, 'Card action but no pending question — ignoring');
@@ -1782,6 +1842,23 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId };
 
+    // Bash approval wiring — gated on approvalBridge (Feishu raw-card).
+    // On platforms without raw-card support the handler returns 'deny' for
+    // any flagged command not already approved (fail closed).
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
+    const approvalHandler = createApprovalHandler({
+      sessionKey,
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
+
     const rateLimiter = new RateLimiter(1500);
 
     // Forward-declare runningTask so the team-event callback can read it
@@ -1818,6 +1895,7 @@ export class MessageBridge {
       apiContext,
       model: session.model,
       onTeamEvent,
+      approvalHandler,
     });
 
     // Register running task
@@ -2042,7 +2120,7 @@ export class MessageBridge {
         // instance).
         const retryHandle = await this.runOneTurn(chatId, engineName, {
           prompt, cwd, abortController, outputsDir, apiContext, model: session.model,
-          onTeamEvent, freshSession: true,
+          onTeamEvent, freshSession: true, approvalHandler,
         });
         executionHandle.finish();
         runningTask.executionHandle = retryHandle;
@@ -2069,7 +2147,7 @@ export class MessageBridge {
 
         const retryHandle = await this.runOneTurn(chatId, engineName, {
           prompt, cwd, abortController, outputsDir, apiContext, model: session.model,
-          onTeamEvent, freshSession: true,
+          onTeamEvent, freshSession: true, approvalHandler,
         });
         executionHandle.finish();
         runningTask.executionHandle = retryHandle;
@@ -2136,7 +2214,7 @@ export class MessageBridge {
         try {
           const retryHandle = await this.runOneTurn(chatId, engineName, {
             prompt, cwd, abortController, outputsDir, apiContext, model: session.model,
-            onTeamEvent, freshSession: true,
+            onTeamEvent, freshSession: true, approvalHandler,
           });
           executionHandle.finish();
           runningTask.executionHandle = retryHandle;
@@ -2218,7 +2296,7 @@ export class MessageBridge {
           try {
             const retryHandle = await this.runOneTurn(chatId, engineName, {
               prompt, cwd, abortController, outputsDir, apiContext, model: session.model,
-              onTeamEvent, freshSession: false,
+              onTeamEvent, freshSession: false, approvalHandler,
             });
             executionHandle.finish();
             runningTask.executionHandle = retryHandle;
@@ -2297,6 +2375,7 @@ export class MessageBridge {
         clearTimeout(runningTask.questionTimeoutId);
       }
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       // Only delete if this is still our task (guards against stopTask race condition)
       if (this.runningTasks.get(chatId) === runningTask) {
         this.runningTasks.delete(chatId);
@@ -2360,6 +2439,21 @@ export class MessageBridge {
 
     const apiContext = { botName: this.config.name, chatId, groupMembers: options.groupMembers, groupId: options.groupId };
 
+    // Per-task Bash approval wiring — see executeQuery for the same pattern.
+    const sessionKey = buildSessionKey(this.config.name, chatId);
+    const detachApprovals = this.approvalBridge?.attachToSession(sessionKey, chatId);
+    const approvalHandler = createApprovalHandler({
+      sessionKey,
+      chatId,
+      cwd,
+      botName: this.config.name,
+      approvalStore,
+      smartApproval: this.smartApproval,
+      cardPromptAvailable: !!this.approvalBridge,
+      audit: this.audit,
+      logger: this.logger,
+    });
+
     // Forward-declare for the onTeamEvent closure below (only assigned once;
     // const cannot be uninitialised — see same pattern in executeQuery).
     // eslint-disable-next-line prefer-const
@@ -2398,6 +2492,7 @@ export class MessageBridge {
       model: options.model ?? session.model,
       allowedTools: options.allowedTools,
       onTeamEvent,
+      approvalHandler,
     });
 
     const startTime = Date.now();
@@ -2541,7 +2636,7 @@ export class MessageBridge {
         const retryHandle = await this.runOneTurn(chatId, engineName, {
           prompt, cwd, abortController, outputsDir, apiContext,
           model: options.model ?? session.model,
-          onTeamEvent, freshSession: true,
+          onTeamEvent, freshSession: true, approvalHandler,
         });
         executionHandle.finish();
         runningTask.executionHandle = retryHandle;
@@ -2621,7 +2716,7 @@ export class MessageBridge {
           const retryHandle = await this.runOneTurn(chatId, engineName, {
             prompt, cwd, abortController, outputsDir, apiContext,
             model: options.model ?? session.model,
-            onTeamEvent, freshSession: true,
+            onTeamEvent, freshSession: true, approvalHandler,
           });
           executionHandle.finish();
           runningTask.executionHandle = retryHandle;
@@ -2702,6 +2797,7 @@ export class MessageBridge {
       clearTimeout(timeoutId);
       if (idleTimerId) clearTimeout(idleTimerId);
       try { executionHandle.finish(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error finishing execution handle'); }
+      try { detachApprovals?.(); } catch (e) { this.logger.warn({ err: e, chatId }, 'Error detaching approval bridge'); }
       this.runningTasks.delete(chatId);
       metrics.setGauge('metabot_active_tasks', this.runningTasks.size);
       this.processQueue(chatId);

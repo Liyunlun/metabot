@@ -150,6 +150,12 @@ export interface PersistentExecutorOptions {
   onTeamEvent?: (event: TeamEvent) => void;
 }
 
+/**
+ * Approval handler for Bash PreToolUse. Provided per-turn by the bridge.
+ * Returns `'allow'` or `'deny'`; deny blocks the command via the SDK.
+ */
+export type ApprovalHandler = (command: string) => Promise<'allow' | 'deny'>;
+
 export type ExecutorState =
   | 'starting'
   | 'ready'
@@ -308,6 +314,12 @@ export class PersistentClaudeExecutor extends EventEmitter {
   private activeTurn: ActiveTurn | null = null;
   /** AskUserQuestion PreToolUse hook resolvers, keyed by tool_use_id. */
   private pendingQuestionResolvers = new Map<string, (answers: Record<string, string>) => void>();
+  /**
+   * Per-turn Bash approval handler. The bridge sets/clears this around each
+   * runOneTurn so the executor's persistent PreToolUse hook can pick up the
+   * current turn's handler closure at call time.
+   */
+  private currentApprovalHandler: ApprovalHandler | undefined;
   /** Spontaneous-message ring buffer (between-turn events). */
   private spontaneousBuffer: SDKMessage[] = [];
   private idleTimerId?: ReturnType<typeof setTimeout>;
@@ -740,15 +752,68 @@ export class PersistentClaudeExecutor extends EventEmitter {
       };
     };
 
+    // Bash approval hook — gated on a per-turn handler set by the bridge via
+    // setApprovalHandler(). When no handler is registered the hook allows
+    // unconditionally. The handler closure is read fresh on every call so
+    // turn-to-turn swaps take effect immediately.
+    const bashApprovalHook = async (
+      input: { hook_event_name: string; tool_name: string; tool_input: unknown },
+    ): Promise<Record<string, unknown>> => {
+      const handler = this.currentApprovalHandler;
+      if (!handler) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      const toolInput = input.tool_input as { command?: string } | undefined;
+      const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+      if (!command) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      try {
+        const verdict = await handler(command);
+        if (verdict === 'deny') {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason:
+                '用户已拒绝此危险命令（或会话被终止）。不要再重试同一命令 — 请询问用户或尝试不同方案。',
+            },
+          };
+        }
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      } catch (err) {
+        log.error(
+          { err: (err as Error).message, command: command.slice(0, 200) },
+          'bashApprovalHook threw — failing closed (deny)',
+        );
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: '审批系统错误，已阻断该命令 — 请稍后重试。',
+          },
+        };
+      }
+    };
+
     return {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion',
-        hooks: [askUserQuestionHook as any],
-      }],
+      PreToolUse: [
+        { matcher: 'AskUserQuestion', hooks: [askUserQuestionHook as any] },
+        { matcher: 'Bash', hooks: [bashApprovalHook as any] },
+      ],
       TaskCreated: [{ hooks: [teamObserver('task_created') as any] }],
       TaskCompleted: [{ hooks: [teamObserver('task_completed') as any] }],
       TeammateIdle: [{ hooks: [teamObserver('teammate_idle') as any] }],
     };
+  }
+
+  /**
+   * Register/unregister the per-turn Bash approval handler.
+   * Called by the bridge around each runOneTurn — pass a handler before
+   * the turn starts, then `undefined` in the finally block.
+   */
+  setApprovalHandler(handler: ApprovalHandler | undefined): void {
+    this.currentApprovalHandler = handler;
   }
 
   /**

@@ -73,4 +73,12 @@ export class FeishuSenderAdapter implements IMessageSender {
   async downloadFile(messageId: string, fileKey: string, savePath: string): Promise<boolean> {
     return this.sender.downloadFile(messageId, fileKey, savePath);
   }
+
+  async sendRawCard(chatId: string, cardJson: string): Promise<string | undefined> {
+    return this.sender.sendCard(chatId, cardJson);
+  }
+
+  async updateRawCard(messageId: string, cardJson: string): Promise<boolean> {
+    return this.sender.updateCard(messageId, cardJson);
+  }
 }

@@ -235,6 +235,11 @@ export interface ExecutorOptions {
   allowedTools?: string[];
   /** Called whenever Claude Code fires a team coordination hook. */
   onTeamEvent?: (event: TeamEvent) => void;
+  /**
+   * Per-execution Bash approval handler. When present every Bash PreToolUse
+   * fire routes through it; 'deny' blocks the command via SDK permissions.
+   */
+  approvalHandler?: (command: string) => Promise<'allow' | 'deny'>;
 }
 
 export type SDKMessage = {
@@ -515,11 +520,51 @@ export class ClaudeExecutor {
       };
     };
 
+    const approvalHandler = options.approvalHandler;
+    const bashApprovalHook = async (
+      input: { hook_event_name: string; tool_name: string; tool_input: unknown },
+    ): Promise<Record<string, unknown>> => {
+      if (!approvalHandler) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      const toolInput = input.tool_input as { command?: string } | undefined;
+      const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+      if (!command) {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      }
+      try {
+        const verdict = await approvalHandler(command);
+        if (verdict === 'deny') {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason:
+                '用户已拒绝此危险命令（或会话被终止）。不要再重试同一命令 — 请询问用户或尝试不同方案。',
+            },
+          };
+        }
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+      } catch (err) {
+        this.logger.error(
+          { err: (err as Error).message, command: command.slice(0, 200) },
+          'bashApprovalHook threw — failing closed (deny)',
+        );
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: '审批系统错误，已阻断该命令 — 请稍后重试。',
+          },
+        };
+      }
+    };
+
     queryOptions.hooks = {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion',
-        hooks: [askUserQuestionHook as any],
-      }],
+      PreToolUse: [
+        { matcher: 'AskUserQuestion', hooks: [askUserQuestionHook as any] },
+        { matcher: 'Bash', hooks: [bashApprovalHook as any] },
+      ],
       TaskCreated: [{ hooks: [teamObserverHook('task_created') as any] }],
       TaskCompleted: [{ hooks: [teamObserverHook('task_completed') as any] }],
       TeammateIdle: [{ hooks: [teamObserverHook('teammate_idle') as any] }],
