@@ -78,6 +78,17 @@ export interface CardState {
   pendingQuestion?: PendingQuestion;
   /** Primary model used (e.g. "claude-opus-4-7") */
   model?: string;
+  /** Bot-configured thinking mode label (e.g. "adaptive") — display only */
+  thinking?: string;
+  /** Bot-configured effort level (e.g. "high") — display only */
+  effort?: string;
+  /** Active retry status — surfaced in card during automatic 403 backoff. */
+  retryInfo?: {
+    attempt: number;
+    maxAttempts: number;
+    nextDelayMs: number;
+    reason: string;
+  };
   /** Total input+output tokens consumed */
   totalTokens?: number;
   /** Context window size of the primary model */

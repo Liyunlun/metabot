@@ -63,6 +63,7 @@ export class CommandHandler {
           '`/model claude`, `/model kimi`, or `/model codex` - Switch engine (resets session)',
           '`/model <name>` - Set model for current engine',
           '`/memory` - Memory document commands',
+          '`/effort [low|medium|high|max]` - View or switch effort level',
           '`/help` - Show this help message',
           '',
           '**Agent Commands** (pass through to the agent — Claude only):',
@@ -140,7 +141,40 @@ export class CommandHandler {
           `**Session:** ${session.sessionId ? `\`${session.sessionId.slice(0, 8)}...\`` : '_None_'}`,
           `**Model:** \`${activeModel}\`${session.model ? ' (session override)' : ''}`,
           `**Running:** ${isRunning ? 'Yes ⏳' : 'No'}`,
+          `**Effort:** \`${this.config.claude.effort || 'max'}\``,
         ].join('\n'));
+        return true;
+      }
+
+      case '/effort': {
+        const VALID_LEVELS = ['low', 'medium', 'high', 'max'] as const;
+        type Level = typeof VALID_LEVELS[number];
+        const arg = text.slice('/effort'.length).trim().toLowerCase();
+        if (!arg) {
+          const current = this.config.claude.effort || 'max';
+          await this.sender.sendTextNotice(
+            chatId,
+            '⚡ Effort Level',
+            `Current: **${current}**\n\nUsage: \`/effort low|medium|high|max\``,
+            'blue',
+          );
+        } else if ((VALID_LEVELS as readonly string[]).includes(arg)) {
+          const prev = this.config.claude.effort || 'max';
+          this.config.claude.effort = arg as Level;
+          await this.sender.sendTextNotice(
+            chatId,
+            '✅ Effort Level Changed',
+            `**${prev}** → **${arg}**\n\nTakes effect on the next message.`,
+            'green',
+          );
+        } else {
+          await this.sender.sendTextNotice(
+            chatId,
+            '❌ Invalid Effort Level',
+            `\`${arg}\` is not valid. Use: \`low\`, \`medium\`, \`high\`, or \`max\`.`,
+            'red',
+          );
+        }
         return true;
       }
 

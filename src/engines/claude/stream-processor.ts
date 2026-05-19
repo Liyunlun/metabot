@@ -22,6 +22,15 @@ export interface DetectedTool {
   name: string;
 }
 
+export interface StreamProcessorConfig {
+  /** Bot-configured model override (display only — actual model comes from SDK). */
+  model?: string;
+  /** Bot-configured thinking mode label (display only). */
+  thinking?: string;
+  /** Bot-configured effort level (display only). */
+  effort?: string;
+}
+
 export class StreamProcessor {
   private responseText = '';
   private toolCalls: ToolCall[] = [];
@@ -42,7 +51,11 @@ export class StreamProcessor {
   // Live background tasks (Monitor, etc.) — task_id → latest rollup.
   private _backgroundEvents: Map<string, BackgroundEvent> = new Map();
 
-  constructor(private userPrompt: string) {}
+  private _config: StreamProcessorConfig;
+
+  constructor(private userPrompt: string, config?: StreamProcessorConfig) {
+    this._config = config ?? {};
+  }
 
   processMessage(message: SDKMessage): CardState {
     // Capture session_id from any message
@@ -91,7 +104,9 @@ export class StreamProcessor {
       toolCalls: [...this.toolCalls],
       costUsd: this.costUsd,
       durationMs: this.durationMs,
-      model: this._model,
+      model: this._model ?? this._config.model,
+      thinking: this._config.thinking,
+      effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
       pendingQuestion: this._pendingQuestions[0] || undefined,
@@ -288,7 +303,9 @@ export class StreamProcessor {
       errorMessage: isError
         ? (message.errors?.join('; ') || `Ended with: ${message.subtype}`)
         : isApiError ? resultText : undefined,
-      model: this._model,
+      model: this._model ?? this._config.model,
+      thinking: this._config.thinking,
+      effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
       backgroundEvents: this._backgroundEvents.size > 0
@@ -387,7 +404,9 @@ export class StreamProcessor {
       toolCalls: [...this.toolCalls],
       costUsd: this.costUsd,
       durationMs: this.durationMs,
-      model: this._model,
+      model: this._model ?? this._config.model,
+      thinking: this._config.thinking,
+      effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
       pendingQuestion: this._pendingQuestions[0] || undefined,

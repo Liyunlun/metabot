@@ -174,6 +174,17 @@ export function buildCardV2(state: CardState): string {
     elements.push({ tag: 'hr' });
   }
 
+  // 403 auto-retry status banner — shown while we're backing off between attempts
+  if (state.retryInfo) {
+    const ri = state.retryInfo;
+    const seconds = Math.round(ri.nextDelayMs / 1000);
+    elements.push({
+      tag:     'markdown',
+      content: `⏳ **Auto-retrying** (${ri.attempt}/${ri.maxAttempts}) — ${ri.reason}, waiting ${seconds}s...`,
+    });
+    elements.push({ tag: 'hr' });
+  }
+
   // Tool calls indicator — single line, no per-tool list.
   // Users repeatedly told us the running tool list is noise; they only care
   // about the final answer. We still show ONE line while the turn is in
@@ -271,6 +282,8 @@ export function buildCardV2(state: CardState): string {
     if (state.status === 'complete' || state.status === 'error') {
       if (state.sessionCostUsd != null) parts.push(`$${state.sessionCostUsd.toFixed(2)}`);
       if (state.model) parts.push(state.model.replace(/^claude-/, ''));
+      if (state.thinking) parts.push(`thinking:${state.thinking}`);
+      if (state.effort) parts.push(`effort:${state.effort}`);
       if (state.durationMs !== undefined) parts.push(`${(state.durationMs / 1000).toFixed(1)}s`);
     }
     if (parts.length > 0) {

@@ -30,6 +30,44 @@ const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
 
 /**
+ * Two-tier auto-retry for 403 (Anthropic forbidden / rate-limit) errors.
+ * Tier 1: 3 attempts, 1 minute apart. Tier 2: 2 attempts, 5 minutes apart.
+ * Total worst-case wait ≈ 13 minutes before giving up.
+ */
+const RETRY_TIERS_403: Array<{ count: number; delayMs: number }> = [
+  { count: 3, delayMs: 60_000 },
+  { count: 2, delayMs: 300_000 },
+];
+const MAX_403_RETRIES = RETRY_TIERS_403.reduce((sum, t) => sum + t.count, 0);
+
+export function is403Error(err: unknown): boolean {
+  if (err == null) return false;
+  if (typeof err === 'string') {
+    return /\b403\b/.test(err) || /forbidden/i.test(err) || /rate.?limit/i.test(err);
+  }
+  if (typeof err !== 'object') return false;
+  const e = err as Record<string, unknown>;
+  const msg = String(e.message ?? '');
+  const status = e.status ?? e.statusCode ?? e.code;
+  return (
+    status === 403 ||
+    status === '403' ||
+    /\b403\b/.test(msg) ||
+    /forbidden/i.test(msg) ||
+    /rate.?limit/i.test(msg)
+  );
+}
+
+export function get403RetryDelay(attempt: number): number | null {
+  let remaining = attempt;
+  for (const tier of RETRY_TIERS_403) {
+    if (remaining < tier.count) return tier.delayMs;
+    remaining -= tier.count;
+  }
+  return null;
+}
+
+/**
  * Default for the persistent-executor pool when no per-bot `persistentExecutor.enabled`
  * is set. Default: ON (since 2026-05-13). Opt out with
  * `METABOT_PERSISTENT_EXECUTOR=false` (or `=0`) in the env.
@@ -443,6 +481,15 @@ export class MessageBridge {
    * the team-review P0 blockers; both shipped, telemetry is clean, no
    * reason to keep new users in the worse default any longer.
    */
+  /** Build the per-turn StreamProcessor config from the bot's static settings. */
+  private streamProcessorConfig() {
+    return {
+      model: this.config.claude.model,
+      thinking: this.config.claude.thinking,
+      effort: this.config.claude.effort,
+    };
+  }
+
   private isPersistentExecutorEnabled(): boolean {
     const cfg = this.config.persistentExecutor;
     if (cfg?.enabled === true) return true;
@@ -859,7 +906,7 @@ export class MessageBridge {
     }
 
     const displayPrompt = '(agent continuation: background task return)';
-    const processor = new StreamProcessor(displayPrompt);
+    const processor = new StreamProcessor(displayPrompt, this.streamProcessorConfig());
     const rateLimiter = new RateLimiter(1500);
     const abortController = new AbortController();
     const session = this.sessionManager.getSession(chatId);
@@ -1699,7 +1746,7 @@ export class MessageBridge {
     const displayPrompt = hasMedia && mediaCount > 1
       ? `🖼️ [${mediaCount} files] ${text}`
       : fileKey ? '📎 ' + text : imageKey ? '🖼️ ' + text : text;
-    const processor = new StreamProcessor(displayPrompt);
+    const processor = new StreamProcessor(displayPrompt, this.streamProcessorConfig());
     // Capture mirrored goal once at task start. New /goal messages can't
     // arrive mid-task (handleMessage rejects them with "Task In Progress"),
     // so this stays stable for the whole run.
@@ -1929,8 +1976,12 @@ export class MessageBridge {
           runningTask.questionTimeoutId = undefined;
         }
 
-        // Break on final states
+        // Break on final states. 403 errors must escape to the catch path
+        // so the auto-retry chain (see RETRY_TIERS_403) can drive backoff.
         if (state.status === 'complete' || state.status === 'error') {
+          if (state.status === 'error' && is403Error(state.errorMessage)) {
+            throw new Error(state.errorMessage || '403 forbidden');
+          }
           break;
         }
 
@@ -2116,6 +2167,93 @@ export class MessageBridge {
         }
       }
 
+      // Auto-retry on 403 (Anthropic forbidden / rate-limited). Two-tier backoff
+      // (RETRY_TIERS_403) gives a transient quota issue ~13 min to clear before
+      // we surface the failure. Each attempt re-acquires the executor so the
+      // upstream PersistentClaudeExecutor doesn't reuse a poisoned auth state.
+      if (is403Error(err) && !abortController.signal.aborted) {
+        let retrySuccess = false;
+        for (let attempt = 0; attempt < MAX_403_RETRIES; attempt++) {
+          const delayMs = get403RetryDelay(attempt);
+          if (delayMs == null) break;
+          this.logger.warn(
+            { chatId, attempt: attempt + 1, max: MAX_403_RETRIES, delayMs },
+            '403 detected — backing off before retry',
+          );
+          await this.sender.updateCard(messageId, {
+            ...lastState,
+            status: 'running',
+            errorMessage: undefined,
+            retryInfo: {
+              attempt: attempt + 1,
+              maxAttempts: MAX_403_RETRIES,
+              nextDelayMs: delayMs,
+              reason: '403 forbidden / rate-limited',
+            },
+          });
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => {
+              abortController.signal.removeEventListener('abort', onAbort);
+              resolve();
+            }, delayMs);
+            const onAbort = () => { clearTimeout(t); reject(new Error('Aborted during 403 backoff')); };
+            abortController.signal.addEventListener('abort', onAbort, { once: true });
+          }).catch(() => { /* aborted — fall through; loop guard breaks next iteration */ });
+          if (abortController.signal.aborted) break;
+
+          try {
+            const retryHandle = await this.runOneTurn(chatId, engineName, {
+              prompt, cwd, abortController, outputsDir, apiContext, model: session.model,
+              onTeamEvent, freshSession: false,
+            });
+            executionHandle.finish();
+            runningTask.executionHandle = retryHandle;
+
+            let saw403Again = false;
+            for await (const message of retryHandle.stream) {
+              if (abortController.signal.aborted) break;
+              resetIdleTimer();
+              const state = processor.processMessage(message);
+              lastState = state;
+              const newSid = processor.getSessionId();
+              if (newSid) this.sessionManager.setSessionId(chatId, newSid, engineName);
+              if (state.status === 'complete') break;
+              if (state.status === 'error') {
+                if (is403Error(state.errorMessage)) { saw403Again = true; break; }
+                break;
+              }
+              rateLimiter.schedule(() => { this.sender.updateCard(messageId, state); });
+            }
+            await rateLimiter.cancelAndWait();
+            if (saw403Again) continue;
+            retrySuccess = true;
+            break;
+          } catch (retryErr: any) {
+            if (is403Error(retryErr)) {
+              this.logger.warn({ err: retryErr, chatId, attempt }, '403 retry attempt also returned 403');
+              continue;
+            }
+            this.logger.error({ err: retryErr, chatId }, '403 retry attempt failed with non-403 error');
+            lastState = { ...lastState, status: 'error', errorMessage: retryErr.message || 'Retry failed' };
+            break;
+          }
+        }
+        if (retrySuccess) {
+          await this.sendFinalCard(messageId, lastState, chatId);
+          const durationMs = Date.now() - startTime;
+          this.audit.log({
+            event: lastState.status === 'error' ? 'task_error' : 'task_complete',
+            botName: this.config.name, chatId, userId, prompt: text,
+            durationMs, costUsd: lastState.costUsd, error: lastState.errorMessage,
+          });
+          this.costTracker.record({ botName: this.config.name, userId, success: lastState.status === 'complete', costUsd: lastState.costUsd, durationMs });
+          this.recordSession(chatId, displayPrompt, lastState.responseText, processor.getSessionId(), lastState.costUsd, durationMs);
+          await this.sendCompletionNotice(chatId, lastState, durationMs);
+          await this.outputHandler.sendOutputFiles(chatId, outputsDir, processor, lastState);
+          return;
+        }
+      }
+
       const durationMs = Date.now() - startTime;
       this.audit.log({
         event: 'task_error', botName: this.config.name, chatId, userId, prompt: text,
@@ -2178,7 +2316,7 @@ export class MessageBridge {
     const outputsDir = this.outputsManager.prepareDir(chatId);
 
     const displayPrompt = prompt;
-    const processor = new StreamProcessor(displayPrompt);
+    const processor = new StreamProcessor(displayPrompt, this.streamProcessorConfig());
     const rateLimiter = new RateLimiter(1500);
     const activeGoal = session.activeGoal;
 
@@ -2337,6 +2475,9 @@ export class MessageBridge {
         }
 
         if (state.status === 'complete' || state.status === 'error') {
+          if (state.status === 'error' && is403Error(state.errorMessage)) {
+            throw new Error(state.errorMessage || '403 forbidden');
+          }
           break;
         }
 

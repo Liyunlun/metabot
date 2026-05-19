@@ -28,6 +28,10 @@ export interface BotConfigBase {
     apiKey: string | undefined;
     outputsBaseDir: string;
     downloadsDir: string;
+    /** Display-only thinking mode label (e.g. "adaptive"). Not passed to the SDK. */
+    thinking?: string;
+    /** Effort level for the model (low|medium|high|max). Mutable at runtime via /effort. */
+    effort?: 'low' | 'medium' | 'high' | 'max';
   };
   /** Kimi-specific overrides. Populated only when engine === 'kimi'. Phase 2. */
   kimi?: {
@@ -206,6 +210,8 @@ export interface FeishuBotJsonEntry extends EngineJsonFields {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  thinking?: string | { type?: string };
+  effort?: 'low' | 'medium' | 'high' | 'max';
   /** When true, respond to all messages in group chats without requiring @mention. */
   groupNoMention?: boolean;
 }
@@ -250,6 +256,8 @@ export interface TelegramBotJsonEntry extends EngineJsonFields {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  thinking?: string | { type?: string };
+  effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 function telegramBotFromJson(entry: TelegramBotJsonEntry): TelegramBotConfig {
@@ -321,6 +329,8 @@ export interface WechatBotJsonEntry extends EngineJsonFields {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  thinking?: string | { type?: string };
+  effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 function wechatBotFromJson(entry: WechatBotJsonEntry): WechatBotConfig {
@@ -349,7 +359,12 @@ function buildClaudeConfig(entry: {
   apiKey?: string;
   outputsBaseDir?: string;
   downloadsDir?: string;
+  thinking?: string | { type?: string };
+  effort?: 'low' | 'medium' | 'high' | 'max';
 }): BotConfigBase['claude'] {
+  const thinkingLabel = typeof entry.thinking === 'string'
+    ? entry.thinking
+    : (entry.thinking && typeof entry.thinking === 'object' && entry.thinking.type) || undefined;
   return {
     defaultWorkingDirectory: expandUserPath(entry.defaultWorkingDirectory),
     maxTurns: entry.maxTurns ?? (process.env.CLAUDE_MAX_TURNS ? parseInt(process.env.CLAUDE_MAX_TURNS, 10) : undefined),
@@ -358,6 +373,8 @@ function buildClaudeConfig(entry: {
     apiKey: entry.apiKey || undefined,
     outputsBaseDir: entry.outputsBaseDir || process.env.OUTPUTS_BASE_DIR || path.join(os.tmpdir(), `metabot-outputs-${os.userInfo().username}`),
     downloadsDir: entry.downloadsDir || process.env.DOWNLOADS_DIR || path.join(os.tmpdir(), `metabot-downloads-${os.userInfo().username}`),
+    ...(thinkingLabel ? { thinking: thinkingLabel } : {}),
+    ...(entry.effort ? { effort: entry.effort } : {}),
   };
 }
 
