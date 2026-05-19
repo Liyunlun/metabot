@@ -25,6 +25,7 @@ import { OutputHandler } from './output-handler.js';
 import { CostTracker } from '../utils/cost-tracker.js';
 import { metrics } from '../utils/metrics.js';
 import type { SessionRegistry } from '../session/session-registry.js';
+import { splitResponseText } from '../feishu/card-builder.js';
 
 const TASK_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const QUESTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for user to answer
@@ -481,12 +482,18 @@ export class MessageBridge {
    * the team-review P0 blockers; both shipped, telemetry is clean, no
    * reason to keep new users in the worse default any longer.
    */
-  /** Build the per-turn StreamProcessor config from the bot's static settings. */
-  private streamProcessorConfig() {
+  /**
+   * Build the per-turn StreamProcessor config. Extras (startTime, workingDirectory)
+   * are optional — pass them when known so the card footer can show
+   * elapsed/cwd/sessionId without each call site spreading the same fields.
+   */
+  private streamProcessorConfig(extras?: { startTime?: number; workingDirectory?: string }) {
     return {
       model: this.config.claude.model,
       thinking: this.config.claude.thinking,
       effort: this.config.claude.effort,
+      ...(extras?.startTime !== undefined ? { startTime: extras.startTime } : {}),
+      ...(extras?.workingDirectory ? { workingDirectory: extras.workingDirectory } : {}),
     };
   }
 
@@ -1746,7 +1753,11 @@ export class MessageBridge {
     const displayPrompt = hasMedia && mediaCount > 1
       ? `🖼️ [${mediaCount} files] ${text}`
       : fileKey ? '📎 ' + text : imageKey ? '🖼️ ' + text : text;
-    const processor = new StreamProcessor(displayPrompt, this.streamProcessorConfig());
+    const turnStartTime = Date.now();
+    const processor = new StreamProcessor(
+      displayPrompt,
+      this.streamProcessorConfig({ startTime: turnStartTime, workingDirectory: session.workingDirectory }),
+    );
     // Capture mirrored goal once at task start. New /goal messages can't
     // arrive mid-task (handleMessage rejects them with "Task In Progress"),
     // so this stays stable for the whole run.
@@ -1757,6 +1768,9 @@ export class MessageBridge {
       responseText: '',
       toolCalls: [],
       goalCondition: activeGoal,
+      startTime: turnStartTime,
+      workingDirectory: session.workingDirectory,
+      sessionId: session.sessionId,
     };
 
     const messageId = await this.sender.sendCard(chatId, initialState);
@@ -2316,7 +2330,11 @@ export class MessageBridge {
     const outputsDir = this.outputsManager.prepareDir(chatId);
 
     const displayPrompt = prompt;
-    const processor = new StreamProcessor(displayPrompt, this.streamProcessorConfig());
+    const apiTaskStartTime = Date.now();
+    const processor = new StreamProcessor(
+      displayPrompt,
+      this.streamProcessorConfig({ startTime: apiTaskStartTime, workingDirectory: cwd }),
+    );
     const rateLimiter = new RateLimiter(1500);
     const activeGoal = session.activeGoal;
 
@@ -2326,6 +2344,9 @@ export class MessageBridge {
       responseText: '',
       toolCalls: [],
       goalCondition: activeGoal,
+      startTime: apiTaskStartTime,
+      workingDirectory: cwd,
+      sessionId: session.sessionId,
     };
 
     let messageId: string | undefined;
@@ -2700,22 +2721,51 @@ export class MessageBridge {
       const session = this.sessionManager.getSession(chatId);
       state.sessionCostUsd = session.cumulativeCostUsd;
     }
+
+    const chunks = state.responseText ? splitResponseText(state.responseText) : null;
+    const needsSplit = chunks !== null && chunks.length > 1;
+    const cardState = needsSplit
+      ? { ...state, responseText: chunks[0] + `\n\n---\n_📄 (1/${chunks.length})_` }
+      : state;
+
+    let updateSucceeded = false;
     for (let attempt = 0; attempt < FINAL_CARD_RETRIES; attempt++) {
-      const ok = await this.sender.updateCard(messageId, state);
-      if (ok) return;
+      const ok = await this.sender.updateCard(messageId, cardState);
+      if (ok) { updateSucceeded = true; break; }
       const delay = FINAL_CARD_BASE_DELAY_MS * Math.pow(2, attempt);
       this.logger.warn({ attempt, delay, messageId }, 'Final card update failed, retrying');
       await new Promise((r) => setTimeout(r, delay));
     }
-    if (chatId) {
-      this.logger.error({ messageId, chatId }, 'All final card retries failed, sending text fallback');
-      const statusEmoji = state.status === 'complete' ? '✅' : '❌';
-      const summary = state.responseText
-        ? state.responseText.slice(0, 2000)
-        : state.errorMessage || 'Task finished';
-      try {
-        await this.sender.sendText(chatId, `${statusEmoji} ${summary}`);
-      } catch { /* last resort failed */ }
+
+    if (!updateSucceeded) {
+      if (chatId) {
+        this.logger.error({ messageId, chatId }, 'All final card retries failed, sending text fallback');
+        const statusEmoji = state.status === 'complete' ? '✅' : '❌';
+        const summary = state.responseText
+          ? state.responseText.slice(0, 2000)
+          : state.errorMessage || 'Task finished';
+        try {
+          await this.sender.sendText(chatId, `${statusEmoji} ${summary}`);
+        } catch { /* last resort failed */ }
+      }
+      return;
+    }
+
+    if (needsSplit && chatId) {
+      this.logger.info({ chatId, totalChunks: chunks!.length }, 'Sending continuation cards for long response');
+      for (let i = 1; i < chunks!.length; i++) {
+        try {
+          await new Promise((r) => setTimeout(r, 1500));
+          await this.sender.sendTextNotice(
+            chatId,
+            `📄 Continued (${i + 1}/${chunks!.length})`,
+            chunks![i] + `\n\n---\n_📄 (${i + 1}/${chunks!.length})_`,
+            'green',
+          );
+        } catch {
+          this.logger.warn({ chatId, chunk: i + 1, total: chunks!.length }, 'Failed to send continuation card');
+        }
+      }
     }
   }
 

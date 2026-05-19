@@ -101,6 +101,16 @@ export interface CardState {
   goalCondition?: string;
   /** Snapshot of the active Agent Team (teammates + tasks), if any. */
   teamState?: TeamState;
+  /** Wall-clock start time of this turn — used to render `(Ns)` elapsed in the header. */
+  startTime?: number;
+  /** Override for the card header title (e.g. frozen Turn snapshots use this). */
+  cardTitle?: string;
+  /** Total number of agent turns this conversation has taken. */
+  numTurns?: number;
+  /** Bot working directory (display only, footer). */
+  workingDirectory?: string;
+  /** Resumable session id (display only, footer). */
+  sessionId?: string;
 }
 
 export interface IncomingMessage {

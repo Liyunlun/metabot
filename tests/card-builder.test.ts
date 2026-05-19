@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildCard, buildHelpCard, buildStatusCard, buildTextCard } from '../src/feishu/card-builder.js';
+import {
+  buildCard,
+  buildHelpCard,
+  buildStatusCard,
+  buildTextCard,
+  splitResponseText,
+  MAX_CONTENT_LENGTH,
+} from '../src/feishu/card-builder.js';
 import type { CardState } from '../src/types.js';
 
 describe('buildCard', () => {
@@ -272,5 +279,35 @@ describe('buildTextCard', () => {
     expect(json.header.template).toBe('green');
     expect(json.header.title.content).toBe('Title');
     expect(json.elements[0].content).toBe('Some content');
+  });
+});
+
+describe('splitResponseText', () => {
+  it('returns a single chunk when text fits', () => {
+    const chunks = splitResponseText('short text');
+    expect(chunks).toEqual(['short text']);
+  });
+
+  it('splits at paragraph boundaries when text exceeds the limit', () => {
+    const para = 'x'.repeat(MAX_CONTENT_LENGTH - 100);
+    const text = para + '\n\n' + para;
+    const chunks = splitResponseText(text);
+    expect(chunks.length).toBe(2);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(MAX_CONTENT_LENGTH);
+    expect(chunks.join('\n\n')).toBe(text);
+  });
+
+  it('falls back to line boundaries when a single block overflows', () => {
+    const longBlock = Array.from({ length: 3 }, () => 'y'.repeat(MAX_CONTENT_LENGTH - 100)).join('\n');
+    const chunks = splitResponseText(longBlock);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(MAX_CONTENT_LENGTH);
+  });
+
+  it('hard-slices when a single line itself overflows the limit', () => {
+    const huge = 'z'.repeat(MAX_CONTENT_LENGTH * 2 + 5);
+    const chunks = splitResponseText(huge);
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(MAX_CONTENT_LENGTH);
   });
 });

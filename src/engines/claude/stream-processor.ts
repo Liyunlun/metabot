@@ -29,6 +29,10 @@ export interface StreamProcessorConfig {
   thinking?: string;
   /** Bot-configured effort level (display only). */
   effort?: string;
+  /** Wall-clock turn start (ms epoch) — surfaced in CardState.startTime for footer/header. */
+  startTime?: number;
+  /** Bot working directory — surfaced in CardState.workingDirectory for the footer. */
+  workingDirectory?: string;
 }
 
 export class StreamProcessor {
@@ -45,6 +49,7 @@ export class StreamProcessor {
   private _model: string | undefined;
   private _totalTokens: number | undefined;
   private _contextWindow: number | undefined;
+  private _numTurns: number | undefined;
   // Track per-API-call usage from stream events for accurate context window display
   private _lastInputTokens: number | undefined;
   private _lastOutputTokens: number | undefined;
@@ -109,6 +114,10 @@ export class StreamProcessor {
       effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
+      numTurns: this._numTurns,
+      startTime: this._config.startTime,
+      workingDirectory: this._config.workingDirectory,
+      sessionId: this.sessionId,
       pendingQuestion: this._pendingQuestions[0] || undefined,
       backgroundEvents: this._backgroundEvents.size > 0
         ? [...this._backgroundEvents.values()]
@@ -256,6 +265,7 @@ export class StreamProcessor {
   private processResultMessage(message: SDKMessage): CardState {
     this.costUsd = message.total_cost_usd;
     this.durationMs = message.duration_ms;
+    if (typeof message.num_turns === 'number') this._numTurns = message.num_turns;
 
     // Extract model usage info (per-model breakdown from SDK)
     if (message.modelUsage) {
@@ -308,6 +318,10 @@ export class StreamProcessor {
       effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
+      numTurns: this._numTurns,
+      startTime: this._config.startTime,
+      workingDirectory: this._config.workingDirectory,
+      sessionId: this.sessionId,
       backgroundEvents: this._backgroundEvents.size > 0
         ? [...this._backgroundEvents.values()]
         : undefined,
@@ -409,6 +423,10 @@ export class StreamProcessor {
       effort: this._config.effort,
       totalTokens: this._totalTokens,
       contextWindow: this._contextWindow,
+      numTurns: this._numTurns,
+      startTime: this._config.startTime,
+      workingDirectory: this._config.workingDirectory,
+      sessionId: this.sessionId,
       pendingQuestion: this._pendingQuestions[0] || undefined,
       backgroundEvents: this._backgroundEvents.size > 0
         ? [...this._backgroundEvents.values()]

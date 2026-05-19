@@ -328,6 +328,135 @@ describe('buildHelpCardV2', () => {
   });
 });
 
+describe('buildCardV2 — Phase 3 Card UX (rebuild/v2)', () => {
+  it('appends elapsed `(Ns)` to header while running with a startTime', () => {
+    const state: CardState = {
+      status:       'running',
+      userPrompt:   'hi',
+      responseText: 'partial',
+      toolCalls:    [],
+      startTime:    Date.now() - 5_000,
+    };
+    const json = JSON.parse(buildCardV2(state));
+    expect(json.header.title.content).toMatch(/\(\d+s\)/);
+  });
+
+  it('formats elapsed >60s as MmSs in header', () => {
+    const state: CardState = {
+      status:       'running',
+      userPrompt:   'hi',
+      responseText: 'partial',
+      toolCalls:    [],
+      startTime:    Date.now() - 75_000,
+    };
+    const json = JSON.parse(buildCardV2(state));
+    expect(json.header.title.content).toMatch(/\(1m\d+s\)/);
+  });
+
+  it('cardTitle overrides default title in header', () => {
+    const state: CardState = {
+      status:       'complete',
+      userPrompt:   'hi',
+      responseText: 'done',
+      toolCalls:    [],
+      cardTitle:    'Turn 3 snapshot',
+    };
+    const json = JSON.parse(buildCardV2(state));
+    expect(json.header.title.content).toContain('Turn 3 snapshot');
+  });
+
+  it('thinking placeholder shows elapsed when startTime present', () => {
+    const state: CardState = {
+      status:       'thinking',
+      userPrompt:   'hi',
+      responseText: '',
+      toolCalls:    [],
+      startTime:    Date.now() - 3_000,
+    };
+    const elements = findElements(JSON.parse(buildCardV2(state)));
+    const thinking = elements.find(
+      (e) => e.tag === 'markdown' && typeof e.content === 'string' && e.content.includes('Thinking'),
+    );
+    expect(thinking.content).toMatch(/Thinking\.\.\. \(\d+s\)/);
+  });
+
+  it('footer surfaces thinking/effort/turns/cwd/sessionId on complete', () => {
+    const state: CardState = {
+      status:           'complete',
+      userPrompt:       'hi',
+      responseText:     'done',
+      toolCalls:        [],
+      model:            'claude-opus-4-7',
+      thinking:         'adaptive',
+      effort:           'high',
+      durationMs:       1234,
+      numTurns:         5,
+      workingDirectory: '/home/user/project-alpha',
+      sessionId:        'abcd1234-rest-of-session-id',
+    };
+    const elements = findElements(JSON.parse(buildCardV2(state)));
+    const footer = elements.find((e) => e.tag === 'column_set');
+    expect(footer).toBeDefined();
+    const content = footer.columns[0].elements[0].content;
+    expect(content).toContain('thinking:adaptive');
+    expect(content).toContain('effort:high');
+    expect(content).toContain('5 turns');
+    expect(content).toContain('📁');
+    expect(content).toContain('🔑 abcd1234');
+  });
+
+  it('shortens long workingDirectory in footer (>40 chars)', () => {
+    const state: CardState = {
+      status:           'complete',
+      userPrompt:       'hi',
+      responseText:     'done',
+      toolCalls:        [],
+      workingDirectory: '/home/user/a-very/deeply-nested/project-with-long-name/sub',
+    };
+    const elements = findElements(JSON.parse(buildCardV2(state)));
+    const footer = elements.find((e) => e.tag === 'column_set');
+    const content = footer.columns[0].elements[0].content;
+    expect(content).toMatch(/\.\.\.\//);
+  });
+
+  it('renders retry banner with attempt count and seconds (403 backoff)', () => {
+    const state: CardState = {
+      status:       'running',
+      userPrompt:   'hi',
+      responseText: '',
+      toolCalls:    [],
+      retryInfo: {
+        attempt:     2,
+        maxAttempts: 5,
+        nextDelayMs: 60_000,
+        reason:      '403 forbidden / rate-limited',
+      },
+    };
+    const elements = findElements(JSON.parse(buildCardV2(state)));
+    const banner = elements.find(
+      (e) => e.tag === 'markdown' && typeof e.content === 'string' && e.content.includes('Auto-retrying'),
+    );
+    expect(banner).toBeDefined();
+    expect(banner.content).toContain('(2/5)');
+    expect(banner.content).toContain('60s');
+  });
+
+  it('strips markdown image syntax from response (Feishu error 11310 guard)', () => {
+    const state: CardState = {
+      status:       'complete',
+      userPrompt:   'hi',
+      responseText: 'See the screenshot ![diagram](https://example.com/x.png) for details',
+      toolCalls:    [],
+    };
+    const elements = findElements(JSON.parse(buildCardV2(state)));
+    const md = elements.find(
+      (e) => e.tag === 'markdown' && typeof e.content === 'string' && e.content.includes('screenshot'),
+    );
+    expect(md.content).not.toContain('![');
+    expect(md.content).toContain('[diagram](https://example.com/x.png)');
+  });
+});
+
 describe('buildStatusCardV2', () => {
   it('shows session info', () => {
     const json = JSON.parse(buildStatusCardV2('user123', '/home/user/project', 'sess-abc-12345678', true));

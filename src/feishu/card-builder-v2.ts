@@ -46,6 +46,25 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + '…';
 }
 
+/**
+ * Strip markdown image syntax from text destined for Feishu lark_md.
+ * Feishu interprets `![alt](src)` as an uploaded image that must be a valid
+ * image_key — if `src` is a URL or local path, the card update fails with
+ * error 11310 and the card freezes mid-render. Converting to `[alt](src)`
+ * keeps the link visible while sidestepping the upload path.
+ */
+function sanitizeLarkMd(text: string): string {
+  return text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '[$1]($2)');
+}
+
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}m${sec}s`;
+}
+
 function truncateContent(text: string): string {
   if (text.length <= MAX_CONTENT_LENGTH) return text;
   const half = Math.floor(MAX_CONTENT_LENGTH / 2) - 50;
@@ -59,7 +78,7 @@ function blockToElement(block: Block): unknown {
         tag: 'div',
         text: {
           tag:     'lark_md',
-          content: '#'.repeat(block.level) + ' ' + block.text,
+          content: sanitizeLarkMd('#'.repeat(block.level) + ' ' + block.text),
         },
       };
 
@@ -109,7 +128,7 @@ function blockToElement(block: Block): unknown {
     case 'markdown':
       return {
         tag:        'markdown',
-        content:    block.text,
+        content:    sanitizeLarkMd(block.text),
         text_align: 'left',
       };
   }
@@ -125,6 +144,8 @@ function responseToElements(text: string): unknown[] {
 export function buildCardV2(state: CardState): string {
   const config   = STATUS_CONFIG[state.status];
   const elements: unknown[] = [];
+  // Elapsed time for header / thinking placeholder.
+  const elapsed = state.startTime ? formatElapsed(Date.now() - state.startTime) : undefined;
 
   // Goal badge — pinned at the top so users see at a glance that the session
   // is in goal-driven mode (Claude /goal). Persists across turns until /goal
@@ -230,7 +251,7 @@ export function buildCardV2(state: CardState): string {
   } else if (state.status === 'thinking') {
     elements.push({
       tag:     'markdown',
-      content: '_Thinking..._',
+      content: elapsed ? `_Thinking... (${elapsed})_` : '_Thinking..._',
     });
   }
 
@@ -285,6 +306,13 @@ export function buildCardV2(state: CardState): string {
       if (state.thinking) parts.push(`thinking:${state.thinking}`);
       if (state.effort) parts.push(`effort:${state.effort}`);
       if (state.durationMs !== undefined) parts.push(`${(state.durationMs / 1000).toFixed(1)}s`);
+      if (state.numTurns !== undefined) parts.push(`${state.numTurns} turns`);
+      if (state.workingDirectory) {
+        const dir   = state.workingDirectory;
+        const short = dir.length > 40 ? '.../' + dir.split('/').slice(-2).join('/') : dir;
+        parts.push(`📁 ${short}`);
+      }
+      if (state.sessionId) parts.push(`🔑 ${state.sessionId.slice(0, 8)}`);
     }
     if (parts.length > 0) {
       elements.push({
@@ -328,7 +356,11 @@ export function buildCardV2(state: CardState): string {
       template: config.color,
       title: {
         tag:     'plain_text',
-        content: `${config.icon} ${config.title}`,
+        content: state.cardTitle
+          ? `${config.icon} ${state.cardTitle}`
+          : elapsed && (state.status === 'thinking' || state.status === 'running')
+            ? `${config.icon} ${config.title} (${elapsed})`
+            : `${config.icon} ${config.title}`,
       },
     },
     body: {
